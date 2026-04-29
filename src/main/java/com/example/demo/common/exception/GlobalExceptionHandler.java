@@ -15,6 +15,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
@@ -83,6 +84,11 @@ public class GlobalExceptionHandler {
         log.error("Neo4j error: {}", exception.getMessage(), exception);
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
             .body(ApiResponse.failure(503, "知识图谱服务异常，请稍后重试"));
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMaxUploadSize(MaxUploadSizeExceededException ex) {
+        return ResponseEntity.status(413).body(ApiResponse.failure(413, "上传文件大小超出限制"));
     }
 
     @ExceptionHandler(Exception.class)

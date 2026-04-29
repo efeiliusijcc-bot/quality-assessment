@@ -379,11 +379,13 @@ public class EvalService {
             try {
                 // Store parameter solution and objective values as JSON strings
                 // These will be persisted via the JSONB columns
+                result.setParameterSolution(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(sol.getParameters()));
+                result.setObjectiveValues(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(sol.getObjectives()));
                 result.setFeasibleFlag(true);
                 result.setRecommendationLevel(i == 0 ? "RECOMMENDED" : "ALTERNATIVE");
                 optimizationResultRepo.save(result);
             } catch (Exception e) {
-                // Best-effort persistence; continue with response
+                org.slf4j.LoggerFactory.getLogger(EvalService.class).warn("Failed to persist optimization result {}: {}", i, e.getMessage());
             }
         }
 
@@ -415,8 +417,8 @@ public class EvalService {
 
         List<ParetoSolutionDto> paretoDtos = results.stream()
             .map(r -> {
-                Map<String, Double> params = parseJsonMap(r.getOptResultId(), "parameters");
-                Map<String, Double> objs = parseJsonMap(r.getOptResultId(), "objectives");
+                Map<String, Double> params = parseJsonMap(r.getParameterSolution());
+                Map<String, Double> objs = parseJsonMap(r.getObjectiveValues());
                 return new ParetoSolutionDto(params, objs, 0.0);
             })
             .toList();
@@ -504,8 +506,13 @@ public class EvalService {
         return bd != null ? bd.doubleValue() : 0.0;
     }
 
-    private Map<String, Double> parseJsonMap(UUID id, String field) {
-        // Placeholder: in a real implementation, parse the JSONB column
-        return Map.of();
+    private Map<String, Double> parseJsonMap(String json) {
+        if (json == null || json.isBlank()) return Map.of();
+        try {
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            return mapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Double>>() {});
+        } catch (Exception e) {
+            return Map.of();
+        }
     }
 }

@@ -27,6 +27,8 @@ import com.example.demo.kg.repository.GatRelationWeightRepository;
 import com.example.demo.kg.repository.GraphVersionRepository;
 import com.example.demo.kg.repository.KgEntityRepository;
 import com.example.demo.kg.repository.KgRelationRepository;
+import com.example.demo.prod.domain.ProductionBatch;
+import com.example.demo.prod.repository.ProductionBatchRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.neo4j.driver.Driver;
@@ -62,6 +64,7 @@ public class KgService {
     private final KgRelationRepository kgRelationRepository;
     private final GatAnalysisTaskRepository gatAnalysisTaskRepository;
     private final GatRelationWeightRepository gatRelationWeightRepository;
+    private final ProductionBatchRepository productionBatchRepository;
     private final Driver neo4jDriver;
     private final ObjectMapper objectMapper;
 
@@ -70,6 +73,7 @@ public class KgService {
                      KgRelationRepository kgRelationRepository,
                      GatAnalysisTaskRepository gatAnalysisTaskRepository,
                      GatRelationWeightRepository gatRelationWeightRepository,
+                     ProductionBatchRepository productionBatchRepository,
                      Driver neo4jDriver,
                      ObjectMapper objectMapper) {
         this.graphVersionRepository = graphVersionRepository;
@@ -77,6 +81,7 @@ public class KgService {
         this.kgRelationRepository = kgRelationRepository;
         this.gatAnalysisTaskRepository = gatAnalysisTaskRepository;
         this.gatRelationWeightRepository = gatRelationWeightRepository;
+        this.productionBatchRepository = productionBatchRepository;
         this.neo4jDriver = neo4jDriver;
         this.objectMapper = objectMapper;
     }
@@ -349,15 +354,40 @@ public class KgService {
     // ═══════════════════════════════════════════════════════
 
     public GraphVisualizationResponse getGraphVisualization(String batchId) {
-        UUID graphVersionId;
+        UUID parsedId;
         try {
-            graphVersionId = UUID.fromString(batchId);
+            parsedId = UUID.fromString(batchId);
         } catch (IllegalArgumentException e) {
             throw new BusinessException(400, "Invalid batchId format, expected UUID");
         }
 
-        List<KgEntity> entities = kgEntityRepository.findByGraphVersionId(graphVersionId);
-        List<KgRelation> relations = kgRelationRepository.findByGraphVersionId(graphVersionId);
+        // 先尝试用 batchId 作为 graphVersionId 查询
+        List<KgEntity> entities = kgEntityRepository.findByGraphVersionId(parsedId);
+        List<KgRelation> relations = kgRelationRepository.findByGraphVersionId(parsedId);
+
+        // 如果查询结果为空，尝试从 ProductionBatchRepository 查询 batchId 对应的批次，查找关联的图版本
+        if (entities.isEmpty()) {
+            Optional<ProductionBatch> batch = productionBatchRepository.findById(parsedId);
+            if (batch.isPresent()) {
+                // 尝试用 batchNo 匹配 graphName 或 versionNo
+                String batchNo = batch.get().getBatchNo();
+                List<GraphVersion> versions = graphVersionRepository.findAll();
+                for (GraphVersion gv : versions) {
+                    if (batchNo.equals(gv.getGraphName()) || batchNo.equals(gv.getVersionNo())) {
+                        entities = kgEntityRepository.findByGraphVersionId(gv.getGraphVersionId());
+                        relations = kgRelationRepository.findByGraphVersionId(gv.getGraphVersionId());
+                        if (!entities.isEmpty()) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 如果还是找不到，返回空的可视化数据
+        if (entities.isEmpty()) {
+            return new GraphVisualizationResponse(List.of(), List.of());
+        }
 
         // Try to enrich from Neo4j
         try {
@@ -422,7 +452,8 @@ public class KgService {
                 addNeo4jNodeIfAbsent(m, entities, existingEntityIds);
             }
         } catch (Exception e) {
-            throw new RuntimeException("Neo4j query failed: " + e.getMessage(), e);
+            // Neo4j 不可用时静默降级，不影响主流程
+            return;
         }
     }
 
@@ -434,7 +465,7 @@ public class KgService {
         String label = neo4jNode.labels().iterator().hasNext()
                 ? neo4jNode.labels().iterator().next()
                 : "Unknown";
-        String name = neo4jNode.containsKey("name")
+        String name = neo4jNode.containsKey("name") && !neo4jNode.get("name").isNull()
                 ? neo4jNode.get("name").asString()
                 : label + "_" + nodeId;
 

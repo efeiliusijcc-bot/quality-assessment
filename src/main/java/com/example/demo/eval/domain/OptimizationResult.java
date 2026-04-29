@@ -53,10 +53,14 @@ public class OptimizationResult {
     public UUID getOptResultId() { return optResultId; }
     public UUID getOptTaskId() { return optTaskId; }
     public Integer getParetoRank() { return paretoRank; }
+    public String getParameterSolution() { return parameterSolution; }
+    public String getObjectiveValues() { return objectiveValues; }
     public Boolean getFeasibleFlag() { return feasibleFlag; }
     public String getRecommendationLevel() { return recommendationLevel; }
     public Instant getCreatedAt() { return createdAt; }
 
+    public void setParameterSolution(String parameterSolution) { this.parameterSolution = parameterSolution; }
+    public void setObjectiveValues(String objectiveValues) { this.objectiveValues = objectiveValues; }
     public void setFeasibleFlag(Boolean feasibleFlag) { this.feasibleFlag = feasibleFlag; }
     public void setRecommendationLevel(String recommendationLevel) { this.recommendationLevel = recommendationLevel; }
 }
