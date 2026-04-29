@@ -61,4 +61,93 @@ public final class ProductionDtos {
         int totalRows,
         int successRows
     ) {}
+
+    public record CreateProcessRunRequest(
+        UUID batchId,
+        @NotBlank UUID stepId,
+        UUID unitId,
+        UUID stationId,
+        UUID equipmentId,
+        UUID recipeId
+    ) {}
+
+    public record CreateParameterValueRequest(
+        UUID runId,
+        UUID paramId,
+        Double valueNum,
+        String valueText
+    ) {}
+
+    public record CreateProcessRecipeRequest(
+        @NotBlank String recipeCode,
+        @NotBlank String recipeName,
+        UUID productTypeId,
+        UUID stepId,
+        String parameterJson
+    ) {}
+
+    public record ProcessRecipeResponse(
+        UUID recipeId,
+        String recipeCode,
+        String recipeName,
+        UUID productTypeId,
+        UUID stepId,
+        String versionNo,
+        Boolean isActive
+    ) {}
+
+    public record ProductUnitResponse(
+        UUID unitId,
+        UUID batchId,
+        String serialNo,
+        UUID currentStepId,
+        String unitStatus
+    ) {}
+
+    public record CreateProductUnitRequest(
+        UUID batchId,
+        @NotBlank String serialNo
+    ) {}
+
+    public record DeviceLogResponse(
+        UUID logId,
+        UUID runId,
+        UUID equipmentId,
+        String logTime,
+        String logLevel,
+        String alarmCode,
+        String alarmName,
+        String logContent
+    ) {}
+
+    public record ProcessRunDetailResponse(
+        UUID runId,
+        UUID batchId,
+        UUID unitId,
+        UUID stepId,
+        UUID stationId,
+        UUID equipmentId,
+        UUID recipeId,
+        String runNo,
+        String runStatus,
+        String startTime,
+        String endTime
+    ) {}
+
+    public record ParameterValueDetailResponse(
+        UUID valueId,
+        UUID runId,
+        UUID paramId,
+        java.math.BigDecimal valueNum,
+        String valueText,
+        String qualityFlag,
+        String measuredAt
+    ) {}
+
+    public record CreateDeviceLogRequest(
+        UUID runId,
+        UUID equipmentId,
+        String logLevel,
+        String logContent
+    ) {}
 }

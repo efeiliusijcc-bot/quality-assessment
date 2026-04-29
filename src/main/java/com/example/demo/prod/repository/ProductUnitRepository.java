@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface ProductUnitRepository extends JpaRepository<ProductUnit, UUID> {
     List<ProductUnit> findByBatchId(UUID batchId);
+    boolean existsByBatchIdAndSerialNo(UUID batchId, String serialNo);
 }

@@ -7,4 +7,7 @@ import java.util.UUID;
 
 public interface ProcessRecipeRepository extends JpaRepository<ProcessRecipe, UUID> {
     List<ProcessRecipe> findByStepIdAndIsActiveTrue(UUID stepId);
+    boolean existsByRecipeCode(String recipeCode);
+    List<ProcessRecipe> findByProductTypeId(UUID productTypeId);
+    List<ProcessRecipe> findByStepId(UUID stepId);
 }

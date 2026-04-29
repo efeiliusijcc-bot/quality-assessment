@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface QualityMeasurementRepository extends JpaRepository<QualityMeasurement, UUID> {
     List<QualityMeasurement> findByRunIdOrderByMeasuredAtAsc(UUID runId);
+    List<QualityMeasurement> findByUnitId(UUID unitId);
 }

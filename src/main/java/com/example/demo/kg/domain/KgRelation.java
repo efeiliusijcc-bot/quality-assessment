@@ -67,6 +67,7 @@ public class KgRelation {
     public String getEvidenceSource() { return evidenceSource; }
     public Instant getCreatedAt() { return createdAt; }
 
+    public void setGraphVersionId(UUID graphVersionId) { this.graphVersionId = graphVersionId; }
     public void setRelationWeight(BigDecimal relationWeight) { this.relationWeight = relationWeight; }
     public void setConfidence(BigDecimal confidence) { this.confidence = confidence; }
     public void setEvidenceSource(String evidenceSource) { this.evidenceSource = evidenceSource; }

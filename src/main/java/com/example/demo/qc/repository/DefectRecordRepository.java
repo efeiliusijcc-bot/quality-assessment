@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface DefectRecordRepository extends JpaRepository<DefectRecord, UUID> {
     List<DefectRecord> findByInspectionId(UUID inspectionId);
+    List<DefectRecord> findByUnitId(UUID unitId);
 }

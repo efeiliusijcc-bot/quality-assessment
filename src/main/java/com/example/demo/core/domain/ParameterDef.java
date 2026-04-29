@@ -79,6 +79,7 @@ public class ParameterDef {
     public BigDecimal getUpperLimit() { return upperLimit; }
     public BigDecimal getStandardValue() { return standardValue; }
     public Boolean getRequiredFlag() { return requiredFlag; }
+    public String getDescription() { return description; }
     public Instant getCreatedAt() { return createdAt; }
 
     public void setStepId(UUID stepId) { this.stepId = stepId; }

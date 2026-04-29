@@ -67,6 +67,9 @@ public class QualityMetricDef {
     public BigDecimal getLowerLimit() { return lowerLimit; }
     public BigDecimal getUpperLimit() { return upperLimit; }
     public BigDecimal getTargetValue() { return targetValue; }
+    public String getPassRule() { return passRule; }
+    public BigDecimal getSeverityWeight() { return severityWeight; }
+    public String getDescription() { return description; }
     public Instant getCreatedAt() { return createdAt; }
 
     public void setStepId(UUID stepId) { this.stepId = stepId; }
@@ -74,4 +77,7 @@ public class QualityMetricDef {
     public void setLowerLimit(BigDecimal lowerLimit) { this.lowerLimit = lowerLimit; }
     public void setUpperLimit(BigDecimal upperLimit) { this.upperLimit = upperLimit; }
     public void setTargetValue(BigDecimal targetValue) { this.targetValue = targetValue; }
+    public void setPassRule(String passRule) { this.passRule = passRule; }
+    public void setSeverityWeight(BigDecimal severityWeight) { this.severityWeight = severityWeight; }
+    public void setDescription(String description) { this.description = description; }
 }

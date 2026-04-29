@@ -51,4 +51,6 @@ public class Workstation {
     public String getLocation() { return location; }
     public String getStatus() { return status; }
     public Instant getCreatedAt() { return createdAt; }
+
+    public void setLocation(String location) { this.location = location; }
 }

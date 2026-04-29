@@ -75,11 +75,21 @@ public class InspectionTask {
     public UUID getUnitId() { return unitId; }
     public UUID getStepId() { return stepId; }
     public String getInspectionType() { return inspectionType; }
+    public String getModelName() { return modelName; }
+    public String getModelVersion() { return modelVersion; }
     public String getResultStatus() { return resultStatus; }
     public BigDecimal getConfidence() { return confidence; }
+    public UUID getImageFileId() { return imageFileId; }
+    public UUID getVideoFileId() { return videoFileId; }
+    public String getRawResult() { return rawResult; }
     public Instant getInspectedAt() { return inspectedAt; }
     public Instant getCreatedAt() { return createdAt; }
 
+    public void setUnitId(UUID unitId) { this.unitId = unitId; }
+    public void setModelName(String modelName) { this.modelName = modelName; }
+    public void setModelVersion(String modelVersion) { this.modelVersion = modelVersion; }
     public void setResultStatus(String resultStatus) { this.resultStatus = resultStatus; }
     public void setConfidence(BigDecimal confidence) { this.confidence = confidence; }
+    public void setImageFileId(UUID imageFileId) { this.imageFileId = imageFileId; }
+    public void setRawResult(String rawResult) { this.rawResult = rawResult; }
 }

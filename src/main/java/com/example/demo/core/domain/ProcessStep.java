@@ -51,4 +51,6 @@ public class ProcessStep {
     public Boolean getIsInspection() { return isInspection; }
     public String getDescription() { return description; }
     public Instant getCreatedAt() { return createdAt; }
+
+    public void setDescription(String description) { this.description = description; }
 }

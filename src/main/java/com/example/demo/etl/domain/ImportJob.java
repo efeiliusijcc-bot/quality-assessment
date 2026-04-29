@@ -87,4 +87,9 @@ public class ImportJob {
     public void setErrorRows(Integer errorRows) { this.errorRows = errorRows; }
     public void setImportedBy(UUID importedBy) { this.importedBy = importedBy; }
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
+    public void setSourceName(String sourceName) { this.sourceName = sourceName; }
+    public void setTargetTable(String targetTable) { this.targetTable = targetTable; }
+    public void setErrorLog(String errorLog) { this.errorLog = errorLog; }
+    public String getTargetTable() { return targetTable; }
+    public String getErrorLog() { return errorLog; }
 }

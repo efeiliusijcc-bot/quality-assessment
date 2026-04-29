@@ -86,6 +86,8 @@ public class DefectRecord {
     public Boolean getIsCritical() { return isCritical; }
     public Instant getCreatedAt() { return createdAt; }
 
+    public void setUnitId(UUID unitId) { this.unitId = unitId; }
+    public void setDefectCount(Integer defectCount) { this.defectCount = defectCount; }
     public void setSeverityLevel(Integer severityLevel) { this.severityLevel = severityLevel; }
     public void setConfidence(BigDecimal confidence) { this.confidence = confidence; }
     public void setIsCritical(Boolean isCritical) { this.isCritical = isCritical; }

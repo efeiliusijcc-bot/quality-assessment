@@ -55,10 +55,12 @@ public class FileResource {
     public String getFilePath() { return filePath; }
     public String getMimeType() { return mimeType; }
     public Long getFileSize() { return fileSize; }
+    public String getSha256() { return sha256; }
     public UUID getUploadedBy() { return uploadedBy; }
     public Instant getUploadedAt() { return uploadedAt; }
 
     public void setMimeType(String mimeType) { this.mimeType = mimeType; }
     public void setFileSize(Long fileSize) { this.fileSize = fileSize; }
+    public void setSha256(String sha256) { this.sha256 = sha256; }
     public void setUploadedBy(UUID uploadedBy) { this.uploadedBy = uploadedBy; }
 }

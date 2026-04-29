@@ -53,4 +53,7 @@ public class ProductType {
     public String getMaterialSystem() { return materialSystem; }
     public String getSpecification() { return specification; }
     public Instant getCreatedAt() { return createdAt; }
+
+    public void setMaterialSystem(String materialSystem) { this.materialSystem = materialSystem; }
+    public void setSpecification(String specification) { this.specification = specification; }
 }

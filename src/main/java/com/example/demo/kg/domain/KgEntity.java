@@ -63,6 +63,7 @@ public class KgEntity {
     public UUID getRefId() { return refId; }
     public String getEntityCode() { return entityCode; }
     public String getEntityName() { return entityName; }
+    public String getProperties() { return properties; }
     public Instant getCreatedAt() { return createdAt; }
 
     public void setGraphVersionId(UUID graphVersionId) { this.graphVersionId = graphVersionId; }

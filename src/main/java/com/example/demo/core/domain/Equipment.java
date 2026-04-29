@@ -64,9 +64,15 @@ public class Equipment {
     public String getEquipmentCode() { return equipmentCode; }
     public String getEquipmentName() { return equipmentName; }
     public String getEquipmentType() { return equipmentType; }
+    public String getManufacturer() { return manufacturer; }
+    public String getModelNo() { return modelNo; }
     public String getStatus() { return status; }
+    public java.time.LocalDate getInstalledAt() { return installedAt; }
     public Instant getCreatedAt() { return createdAt; }
 
     public void setStationId(UUID stationId) { this.stationId = stationId; }
     public void setEquipmentType(String equipmentType) { this.equipmentType = equipmentType; }
+    public void setManufacturer(String manufacturer) { this.manufacturer = manufacturer; }
+    public void setModelNo(String modelNo) { this.modelNo = modelNo; }
+    public void setInstalledAt(java.time.LocalDate installedAt) { this.installedAt = installedAt; }
 }

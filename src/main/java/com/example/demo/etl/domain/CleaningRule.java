@@ -56,6 +56,13 @@ public class CleaningRule {
     public String getRuleCode() { return ruleCode; }
     public String getRuleName() { return ruleName; }
     public String getTargetCategory() { return targetCategory; }
+    public String getConditionExpr() { return conditionExpr; }
+    public String getActionExpr() { return actionExpr; }
+    public Integer getPriorityNo() { return priorityNo; }
     public Boolean getEnabledFlag() { return enabledFlag; }
     public Instant getCreatedAt() { return createdAt; }
+
+    public void setTargetCategory(String targetCategory) { this.targetCategory = targetCategory; }
+    public void setPriorityNo(Integer priorityNo) { this.priorityNo = priorityNo; }
+    public void setEnabledFlag(Boolean enabledFlag) { this.enabledFlag = enabledFlag; }
 }

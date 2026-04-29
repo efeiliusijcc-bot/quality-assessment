@@ -7,6 +7,7 @@ import java.util.UUID;
 
 public interface KgRelationRepository extends JpaRepository<KgRelation, UUID> {
     List<KgRelation> findBySourceEntityId(UUID sourceEntityId);
+    List<KgRelation> findByTargetEntityId(UUID targetEntityId);
     List<KgRelation> findByRelationType(String relationType);
     List<KgRelation> findByGraphVersionId(UUID graphVersionId);
 }

@@ -45,6 +45,13 @@ public class ProductionBatchService {
         return batchRepository.findAll().stream().map(this::toResponse).toList();
     }
 
+    public List<BatchResponse> listBatchesByProductType(UUID productTypeId) {
+        return batchRepository.findAll().stream()
+            .filter(b -> productTypeId.equals(b.getProductTypeId()))
+            .map(this::toResponse)
+            .toList();
+    }
+
     private ProductionBatch requireBatch(UUID batchId) {
         return batchRepository.findById(batchId)
             .orElseThrow(() -> new BusinessException(404, "batch not found"));

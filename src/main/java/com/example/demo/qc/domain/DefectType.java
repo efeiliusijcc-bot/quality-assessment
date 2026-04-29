@@ -54,5 +54,10 @@ public class DefectType {
     public String getDefectName() { return defectName; }
     public String getDefectCategory() { return defectCategory; }
     public Integer getDefaultSeverity() { return defaultSeverity; }
+    public String getDescription() { return description; }
     public Instant getCreatedAt() { return createdAt; }
+
+    public void setDefectCategory(String defectCategory) { this.defectCategory = defectCategory; }
+    public void setDefaultSeverity(Integer defaultSeverity) { this.defaultSeverity = defaultSeverity; }
+    public void setDescription(String description) { this.description = description; }
 }

@@ -56,6 +56,8 @@ public class GatAnalysisTask {
     public String getTaskStatus() { return taskStatus; }
     public Instant getCreatedAt() { return createdAt; }
 
+    public Instant getFinishedAt() { return finishedAt; }
+    public void setModelName(String modelName) { this.modelName = modelName; }
     public void setTaskStatus(String taskStatus) { this.taskStatus = taskStatus; }
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
 }

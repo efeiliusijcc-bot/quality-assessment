@@ -77,6 +77,9 @@ public class QualityMeasurement {
     public BigDecimal getDeviationValue() { return deviationValue; }
     public Instant getCreatedAt() { return createdAt; }
 
+    public void setUnitId(UUID unitId) { this.unitId = unitId; }
     public void setIsPass(Boolean isPass) { this.isPass = isPass; }
     public void setDeviationValue(BigDecimal deviationValue) { this.deviationValue = deviationValue; }
+    public void setMeasurementMethod(String measurementMethod) { this.measurementMethod = measurementMethod; }
+    public void setSourceFileId(UUID sourceFileId) { this.sourceFileId = sourceFileId; }
 }

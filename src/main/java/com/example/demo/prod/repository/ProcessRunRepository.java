@@ -8,4 +8,5 @@ import java.util.UUID;
 public interface ProcessRunRepository extends JpaRepository<ProcessRun, UUID> {
     List<ProcessRun> findByBatchIdOrderByCreatedAtAsc(UUID batchId);
     List<ProcessRun> findByBatchIdAndStepId(UUID batchId, UUID stepId);
+    List<ProcessRun> findByUnitIdOrderByCreatedAtAsc(UUID unitId);
 }
