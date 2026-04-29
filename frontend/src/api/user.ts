@@ -51,7 +51,7 @@ export const loginByPassword = async (payload: LoginPayload): Promise<LoginResul
     user: {
       id: res.userId,
       name: res.realName || res.username,
-      role: res.roleCode as UserProfile['role'],
+      role: res.roleCode.toLowerCase() as UserProfile['role'],
     },
   };
 
