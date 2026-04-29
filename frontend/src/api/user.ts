@@ -26,10 +26,11 @@ export interface LoginResult {
 
 interface LoginApiResponse {
   token: string;
-  userId: string;
-  username: string;
-  realName: string;
-  roleCode: string;
+  user: {
+    id: string;
+    name: string;
+    role: string;
+  };
 }
 
 export const getLoginCaptcha = async (): Promise<LoginCaptcha> => {
@@ -49,9 +50,9 @@ export const loginByPassword = async (payload: LoginPayload): Promise<LoginResul
   const result: LoginResult = {
     token: res.token,
     user: {
-      id: res.userId,
-      name: res.realName || res.username,
-      role: res.roleCode.toLowerCase() as UserProfile['role'],
+      id: res.user.id,
+      name: res.user.name,
+      role: res.user.role.toLowerCase() as UserProfile['role'],
     },
   };
 
