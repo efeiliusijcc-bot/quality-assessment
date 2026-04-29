@@ -1,0 +1,779 @@
+电子元器件装配产线生产质量评估
+
+PostgreSQL 视图设计文档
+
+适用于：质量评估软件平台、深度学习模型读取、知识图谱同步与生产质量看板
+
+本文档基于已建立的 PostgreSQL 底层表结构进行视图层设计。底层表负责规范存储，视图层负责面向业务、算法和知识图谱提供可直接查询的数据结果。
+
+文档目录
+
+1. 设计目标
+
+2. 视图分层原则
+
+3. 视图清单
+
+4. 核心视图详细设计
+
+5. 物化视图设计
+
+6. 与 Neo4j/GAT 的数据对接
+
+7. 在 Navicat 中执行和维护
+
+8. 后续扩展建议
+
+1. 设计目标
+
+视图层的目标不是替代底层表，而是将分散在批次、工序、参数、质量检测、缺陷、评估和知识图谱中间表中的数据进行业务化组织。
+
+面向前端展示：将多张表关联成批次总览、工序执行明细、缺陷明细、评估结果等可直接展示的数据结构。
+
+面向算法读取：将参数、质量指标、缺陷记录整理为长表或 JSON 快照，便于深度学习、质量评估模型和超多目标优化算法读取。
+
+面向知识图谱同步：将 PostgreSQL 中的 kg.kg_entity 与 kg.kg_relation 规范化导出，作为 Neo4j 节点和关系导入来源。
+
+面向统计看板：通过物化视图保存高频统计结果，减少前端大屏和历史趋势查询时的多表聚合压力。
+
+2. 视图分层原则
+
+建议将视图分成四类：生产过程视图、质量检测视图、评估优化视图、图谱导出视图。对统计汇总和大屏展示使用物化视图。
+
+层级
+
+对象
+
+主要用途
+
+更新方式
+
+生产过程视图
+
+prod.v_*
+
+批次、工序、设备、工艺参数查询
+
+实时查询
+
+质量检测视图
+
+qc.v_*
+
+质量指标、AOI检测、缺陷明细查询
+
+实时查询
+
+评估优化视图
+
+eval.v_*
+
+合格性评估、研判性评估、预测性评估、参数优化结果查询
+
+实时查询
+
+图谱导出视图
+
+kg.v_*
+
+导出 Neo4j 节点、关系和 GAT 权重
+
+按图谱版本或任务同步
+
+统计物化视图
+
+prod.mv_* / qc.mv_* / eval.mv_*
+
+看板统计、趋势分析、批量报表
+
+定时或手动刷新
+
+3. 视图清单
+
+视图名称
+
+中文名称
+
+主要用途
+
+prod.v_batch_overview
+
+生产批次总览
+
+批次列表、批次状态、产品型号关联
+
+prod.v_process_run_detail
+
+工序执行明细
+
+批次追溯、工位显示、设备与配方关联
+
+prod.v_process_parameter_long
+
+参数长表
+
+参数趋势、异常参数筛选、算法特征抽取
+
+prod.v_process_run_parameter_json
+
+参数 JSON 汇总
+
+前端参数卡片、模型输入快照
+
+prod.v_device_log_detail
+
+设备日志明细
+
+报警追溯、异常研判
+
+qc.v_quality_measurement_detail
+
+质量实测明细
+
+合格性评估、质量曲线、历史查询
+
+qc.v_inspection_task_detail
+
+检测任务明细
+
+AOI/视觉/无损检测任务列表
+
+qc.v_defect_detail
+
+缺陷明细
+
+缺陷统计、图像追溯、严重度分析
+
+eval.v_assessment_result_detail
+
+评估结果明细
+
+合格性、研判性、预测性评估结果展示
+
+eval.v_optimization_result_detail
+
+优化结果明细
+
+Pareto 解集、推荐参数组合展示
+
+kg.v_neo4j_node_export
+
+Neo4j 节点导出
+
+PG 实体同步为 Neo4j 节点
+
+kg.v_neo4j_relation_export
+
+Neo4j 关系导出
+
+PG 关系同步为 Neo4j 边
+
+kg.v_gat_relation_weight_export
+
+GAT 权重导出
+
+将 GAT 注意力权重写入 Neo4j 关系属性
+
+prod.mv_batch_process_progress
+
+批次工序进度
+
+生产过程看板
+
+qc.mv_step_quality_pass_rate
+
+工序质量合格率
+
+质量趋势与合格率统计
+
+qc.mv_step_defect_statistics
+
+工序缺陷统计
+
+缺陷分布、缺陷频次分析
+
+eval.mv_batch_quality_dashboard
+
+批次质量看板
+
+软件首页、大屏展示、批次质量总览
+
+4. 核心视图详细设计
+
+4.1 生产批次总览视图：prod.v_batch_overview
+
+该视图将生产批次表与产品型号表、创建用户表关联，适合用于系统首页批次列表、批次状态查询和质量评估入口。
+
+设计项
+
+说明
+
+来源表
+
+prod.production_batch、core.product_type、app.app_user
+
+关键字段
+
+batch_no、product_code、product_name、plan_qty、actual_qty、batch_status、start_time、end_time
+
+适用模块
+
+生产质量评估首页、批次筛选、批次追溯
+
+4.2 工序执行明细视图：prod.v_process_run_detail
+
+该视图以 prod.process_run 为核心，串联批次、单件产品、工序、工位、设备、配方和操作员，是后续参数值、质量检测和缺陷记录的过程主线。
+
+设计项
+
+说明
+
+来源表
+
+prod.process_run、prod.production_batch、prod.product_unit、core.process_step、core.workstation、core.equipment、prod.process_recipe
+
+关键字段
+
+run_id、batch_no、serial_no、step_code、step_name、station_name、equipment_name、recipe_name、run_status、duration_seconds
+
+适用模块
+
+工序过程展示、工位数据查询、设备关联查询、工序追溯
+
+4.3 参数长表视图：prod.v_process_parameter_long
+
+该视图保留每条参数采集记录，适合做参数曲线、参数异常筛选、规则引擎清洗和算法特征抽取。由于每个参数一行，因此适合统计和筛选。
+
+设计项
+
+说明
+
+来源表
+
+prod.parameter_value、core.parameter_def、prod.process_run、core.file_resource
+
+关键字段
+
+param_name、param_category、data_type、value_num、value_display、quality_flag、is_out_of_limit
+
+适用模块
+
+工艺参数研判、参数趋势图、参数异常报警、模型特征表
+
+4.4 参数 JSON 汇总视图：prod.v_process_run_parameter_json
+
+该视图按一次工序执行记录聚合参数，将一个 run_id 下的所有参数整理成 parameter_json，适合前端一次性展示和模型输入快照。
+
+设计项
+
+说明
+
+来源表
+
+prod.process_run、prod.parameter_value、core.parameter_def
+
+关键字段
+
+run_id、batch_no、step_name、parameter_json、parameter_quality_json
+
+适用模块
+
+参数卡片展示、预测模型输入、评估任务 input_snapshot 生成
+
+4.5 质量实测明细视图：qc.v_quality_measurement_detail
+
+该视图将质量实测值与质量指标定义、批次、产品、工序关联，适合做合格性评估和质量参数曲线展示。
+
+设计项
+
+说明
+
+来源表
+
+qc.quality_measurement、qc.quality_metric_def、prod.process_run、prod.production_batch
+
+关键字段
+
+metric_name、unit、lower_limit、upper_limit、target_value、value_num、is_pass、deviation_value
+
+适用模块
+
+产品质量合格评估、质量曲线、历史质量数据查询
+
+4.6 缺陷明细视图：qc.v_defect_detail
+
+该视图将缺陷记录与检测任务、缺陷类型、工序、批次和缺陷图片资源关联，是 AOI/视觉检测结果展示的核心视图。
+
+设计项
+
+说明
+
+来源表
+
+qc.defect_record、qc.inspection_task、qc.defect_type、core.file_resource
+
+关键字段
+
+defect_name、defect_count、defect_size、defect_area、location_x、location_y、bbox_json、confidence、severity_level
+
+适用模块
+
+缺陷识别结果展示、缺陷统计、缺陷图像追溯、缺陷严重度分析
+
+4.7 评估结果明细视图：eval.v_assessment_result_detail
+
+该视图将评估任务与评估结果关联，统一服务合格性评估、研判性评估和预测性评估三个子系统。
+
+设计项
+
+说明
+
+来源表
+
+eval.assessment_task、eval.assessment_result、prod.production_batch、core.process_step
+
+关键字段
+
+task_type、assessment_score、pass_probability、risk_level、conclusion、problem_params、suggestions
+
+适用模块
+
+评估结果展示、历史评估查询、报告生成
+
+4.8 优化结果明细视图：eval.v_optimization_result_detail
+
+该视图用于展示超多目标优化任务及其结果，包括算法名称、优化目标、约束条件、Pareto 排名和推荐参数组合。
+
+设计项
+
+说明
+
+来源表
+
+eval.optimization_task、eval.optimization_result、prod.production_batch、core.process_step
+
+关键字段
+
+algorithm_name、objectives、constraints、pareto_rank、parameter_solution、objective_values、feasible_flag
+
+适用模块
+
+工艺参数优化、主动调控建议、优化结果对比
+
+5. 物化视图设计
+
+物化视图适合放置高频统计结果，例如工序合格率、缺陷频次、批次质量看板。普通视图每次查询都会动态关联底层表，而物化视图会保存查询结果，因此查询更快，但需要定期刷新。
+
+物化视图
+
+统计内容
+
+建议刷新频率
+
+prod.mv_batch_process_progress
+
+每个批次的工序执行数量、完成数量、异常数量、涉及工序
+
+生产中每 5-10 分钟刷新一次；生产结束后手动刷新
+
+qc.mv_step_quality_pass_rate
+
+每个工序、每个质量指标的检测数量、合格数量、失败数量、合格率、均值、最大最小值
+
+质量检测数据导入后刷新
+
+qc.mv_step_defect_statistics
+
+每个工序、每类缺陷的缺陷记录数、缺陷总数、平均尺寸、严重缺陷数
+
+AOI/视觉检测结果导入后刷新
+
+eval.mv_batch_quality_dashboard
+
+批次级质量总览，包括合格率、缺陷数量、关键缺陷数、最新评估结论
+
+首页或大屏展示前刷新，或定时刷新
+
+物化视图刷新 SQL 示例：
+
+REFRESH MATERIALIZED VIEW prod.mv_batch_process_progress;
+
+REFRESH MATERIALIZED VIEW qc.mv_step_quality_pass_rate;
+
+REFRESH MATERIALIZED VIEW qc.mv_step_defect_statistics;
+
+REFRESH MATERIALIZED VIEW eval.mv_batch_quality_dashboard;
+
+6. 与 Neo4j/GAT 的数据对接
+
+PostgreSQL 负责存储完整的业务数据和中间结果，Neo4j 负责表达工序、参数、缺陷、质量指标之间的关系网络。因此需要专门的导出视图，将 PG 中的实体、关系和 GAT 权重转换为适合图数据库导入的数据结构。
+
+导出视图
+
+导出对象
+
+用途
+
+kg.v_neo4j_node_export
+
+知识图谱节点
+
+将 kg.kg_entity 导出为 Neo4j 节点，包含 node_id、node_label、entity_name、properties
+
+kg.v_neo4j_relation_export
+
+知识图谱关系
+
+将 kg.kg_relation 导出为 Neo4j 边，包含 source_node_id、target_node_id、relation_type、confidence、evidence_payload
+
+kg.v_gat_relation_weight_export
+
+GAT 注意力权重
+
+将 GAT 输出写入 Neo4j 边属性，如 attention_weight、hidden_relation_flag
+
+典型同步逻辑如下：
+
+-- 1. 从 kg.v_neo4j_node_export 读取节点数据，写入 Neo4j 节点
+
+-- 2. 从 kg.v_neo4j_relation_export 读取关系数据，写入 Neo4j 关系
+
+-- 3. 从 kg.v_gat_relation_weight_export 读取注意力权重，更新 Neo4j 关系属性
+
+-- 4. Neo4j 中的关系可保留 source='RULE/APRIORI/GAT/MANUAL' 与 weight/confidence 信息
+
+7. 在 Navicat 中执行和维护
+
+第一步：确认已经在目标数据库中执行过 pg_quality_assessment_schema.sql，并且 app、core、prod、qc、eval、kg、etl 等 schema 已经创建成功。
+
+第二步：在 Navicat 左侧选中目标数据库，例如 CCTV，打开查询窗口。
+
+第三步：执行随文附带的 pg_quality_assessment_views.sql 文件。执行完成后，在 prod、qc、eval、kg 等 schema 下可以看到对应视图和物化视图。
+
+第四步：普通视图不需要刷新，底层表数据变化后查询结果会自动变化；物化视图需要执行 REFRESH MATERIALIZED VIEW。
+
+第五步：如果后续修改物化视图定义，需要先 DROP MATERIALIZED VIEW，再重新 CREATE。普通视图可以直接 CREATE OR REPLACE VIEW。
+
+Navicat 查询示例：
+
+SELECT * FROM prod.v_process_run_detail LIMIT 20;
+
+SELECT * FROM prod.v_process_parameter_long WHERE is_out_of_limit = true;
+
+SELECT * FROM qc.v_defect_detail WHERE is_critical = true;
+
+SELECT * FROM eval.mv_batch_quality_dashboard ORDER BY latest_assessment_time DESC NULLS LAST;
+
+8. 核心 SQL 片段
+
+完整 SQL 已整理为 pg_quality_assessment_views.sql。下面展示部分关键视图片段，便于理解设计思路。
+
+8.1 工序执行明细视图
+
+CREATE OR REPLACE VIEW prod.v_process_run_detail AS
+
+SELECT
+
+    pr.run_id,
+
+    pr.run_no,
+
+    b.batch_id,
+
+    b.batch_no,
+
+    pt.product_type_id,
+
+    pt.product_code,
+
+    pt.product_name,
+
+    pu.unit_id,
+
+    pu.serial_no,
+
+    ps.step_id,
+
+    ps.step_code,
+
+    ps.step_name,
+
+    ps.step_order,
+
+    ps.is_inspection,
+
+    ws.station_id,
+
+    ws.station_code,
+
+    ws.station_name,
+
+    eq.equipment_id,
+
+    eq.equipment_code,
+
+    eq.equipment_name,
+
+    eq.equipment_type,
+
+    r.recipe_id,
+
+    r.recipe_code,
+
+    r.recipe_name,
+
+    r.version_no AS recipe_version,
+
+    op.user_id AS operator_id,
+
+    op.username AS operator_username,
+
+    op.real_name AS operator_name,
+
+    pr.start_time,
+
+    pr.end_time,
+
+    CASE
+
+        WHEN pr.start_time IS NOT NULL AND pr.end_time IS NOT NULL
+
+        THEN EXTRACT(EPOCH FROM (pr.end_time - pr.start_time))
+
+        ELSE NULL
+
+    END AS duration_seconds,
+
+    pr.run_status,
+
+    pr.context_json,
+
+    pr.created_at
+
+FROM prod.process_run pr
+
+JOIN prod.production_batch b ON pr.batch_id = b.batch_id
+
+JOIN core.product_type pt ON b.product_type_id = pt.product_type_id
+
+LEFT JOIN prod.product_unit pu ON pr.unit_id = pu.unit_id
+
+JOIN core.process_step ps ON pr.step_id = ps.step_id
+
+-- ……完整SQL见随文附带的 pg_quality_assessment_views.sql 文件
+
+8.2 参数 JSON 汇总视图
+
+CREATE OR REPLACE VIEW prod.v_process_run_parameter_json AS
+
+SELECT
+
+    pr.run_id,
+
+    b.batch_id,
+
+    b.batch_no,
+
+    pu.unit_id,
+
+    pu.serial_no,
+
+    ps.step_id,
+
+    ps.step_code,
+
+    ps.step_name,
+
+    jsonb_object_agg(
+
+        pd.param_name,
+
+        COALESCE(
+
+            to_jsonb(pv.value_num),
+
+            to_jsonb(pv.value_text),
+
+            to_jsonb(pv.value_bool),
+
+            to_jsonb(pv.value_time),
+
+            pv.value_json,
+
+            CASE WHEN pv.file_id IS NOT NULL THEN jsonb_build_object('file_id', pv.file_id, 'file_name', fr.file_name, 'file_path', fr.file_path) END
+
+        )
+
+    ) FILTER (WHERE pv.value_id IS NOT NULL) AS parameter_json,
+
+    jsonb_object_agg(pd.param_name, pv.quality_flag) FILTER (WHERE pv.value_id IS NOT NULL) AS parameter_quality_json
+
+FROM prod.process_run pr
+
+JOIN prod.production_batch b ON pr.batch_id = b.batch_id
+
+LEFT JOIN prod.product_unit pu ON pr.unit_id = pu.unit_id
+
+JOIN core.process_step ps ON pr.step_id = ps.step_id
+
+LEFT JOIN prod.parameter_value pv ON pr.run_id = pv.run_id
+
+LEFT JOIN core.parameter_def pd ON pv.param_id = pd.param_id
+
+LEFT JOIN core.file_resource fr ON pv.file_id = fr.file_id
+
+GROUP BY pr.run_id, b.batch_id, b.batch_no, pu.unit_id, pu.serial_no, ps.step_id, ps.step_code, ps.step_name;
+
+8.3 缺陷明细视图
+
+CREATE OR REPLACE VIEW qc.v_defect_detail AS
+
+SELECT
+
+    dr.defect_id,
+
+    it.inspection_id,
+
+    pr.run_id,
+
+    pr.run_no,
+
+    b.batch_id,
+
+    b.batch_no,
+
+    pt.product_type_id,
+
+    pt.product_code,
+
+    pt.product_name,
+
+    pu.unit_id,
+
+    pu.serial_no,
+
+    ps.step_id,
+
+    ps.step_code,
+
+    ps.step_name,
+
+    it.inspection_type,
+
+    it.model_name,
+
+    it.model_version,
+
+    it.result_status,
+
+    dt.defect_type_id,
+
+    dt.defect_code,
+
+    dt.defect_name,
+
+    dt.defect_category,
+
+    dt.default_severity,
+
+    dr.defect_count,
+
+    dr.defect_size,
+
+    dr.defect_area,
+
+    dr.location_x,
+
+    dr.location_y,
+
+    dr.location_z,
+
+    dr.bbox_json,
+
+    dr.defect_image_id,
+
+    img.file_name AS defect_image_name,
+
+    img.file_path AS defect_image_path,
+
+    dr.confidence,
+
+    dr.severity_level,
+
+    dr.is_critical,
+
+    dr.created_at
+
+FROM qc.defect_record dr
+
+JOIN qc.inspection_task it ON dr.inspection_id = it.inspection_id
+
+JOIN prod.process_run pr ON it.run_id = pr.run_id
+
+JOIN prod.production_batch b ON pr.batch_id = b.batch_id
+
+JOIN core.product_type pt ON b.product_type_id = pt.product_type_id
+
+LEFT JOIN prod.product_unit pu ON dr.unit_id = pu.unit_id
+
+-- ……完整SQL见随文附带的 pg_quality_assessment_views.sql 文件
+
+8.4 Neo4j 节点导出视图
+
+CREATE OR REPLACE VIEW kg.v_neo4j_node_export AS
+
+SELECT
+
+    e.entity_id::text AS node_id,
+
+    e.entity_type,
+
+    CASE e.entity_type
+
+        WHEN 'PROCESS' THEN 'ProcessStep'
+
+        WHEN 'PARAMETER' THEN 'Parameter'
+
+        WHEN 'QUALITY_METRIC' THEN 'QualityMetric'
+
+        WHEN 'DEFECT' THEN 'DefectType'
+
+        WHEN 'EQUIPMENT' THEN 'Equipment'
+
+        WHEN 'BATCH' THEN 'Batch'
+
+        WHEN 'PRODUCT' THEN 'ProductType'
+
+        ELSE 'Entity'
+
+    END AS node_label,
+
+    e.entity_code,
+
+    e.entity_name,
+
+    e.ref_schema,
+
+    e.ref_table,
+
+    e.ref_id::text AS ref_id,
+
+    e.properties,
+
+    e.graph_version_id::text AS graph_version_id,
+
+    e.created_at
+
+FROM kg.kg_entity e;
+
+9. 后续扩展建议
+
+如果前端页面需要固定字段展示，可以在现有视图基础上再建立页面专用视图，例如 v_dashboard_home、v_station_quality_panel。
+
+如果算法模型需要固定输入矩阵，建议基于 prod.v_process_parameter_long 生成训练集抽取 SQL，避免直接读取底层参数值表。
+
+如果数据量变大，建议为高频筛选字段增加索引，同时将质量趋势、缺陷趋势、批次看板等统计结果改为物化视图。
+
+如果需要做到准实时看板，可以使用定时任务刷新物化视图，例如每 5 分钟刷新生产进度，每 10 分钟刷新质量统计。
+
+如果后续引入数据权限，可在视图中增加用户权限过滤，或者使用 PostgreSQL Row Level Security 进行行级控制。

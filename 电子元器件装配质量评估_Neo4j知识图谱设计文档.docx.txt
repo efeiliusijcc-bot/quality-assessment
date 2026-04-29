@@ -1,0 +1,1565 @@
+电子元器件装配生产质量评估知识图谱
+
+Neo4j 图数据库设计文档
+
+适用场景：多层高温共烧陶瓷及电子元器件装配产线质量评估
+
+支撑功能：知识图谱构建、GAT 关系权重分析、缺陷溯因、工艺参数优化、软件平台可视化
+
+日期：2026-04-29
+
+版本：V1.0
+
+目录
+
+1. 设计目标与建设边界
+
+2. 总体架构设计
+
+3. 图谱数据来源与同步路径
+
+4. Neo4j 节点模型设计
+
+5. Neo4j 关系模型设计
+
+6. 节点与关系属性规范
+
+7. 约束、索引与命名规范
+
+8. PostgreSQL 到 Neo4j 的导入方案
+
+9. GAT 分析结果在 Neo4j 中的表达
+
+10. 典型查询与业务应用
+
+11. 数据更新策略与运行维护建议
+
+12. 附录：可执行 Cypher 脚本模板
+
+1. 设计目标与建设边界
+
+1.1 设计目标
+
+本设计文档面向“视觉检测融合知识图谱与深度学习的电子元器件装配生产质量评估”项目，给出 Neo4j 图数据库的节点、关系、属性、约束、导入与查询设计。Neo4j 不替代 PostgreSQL 的业务数据存储，而是作为质量评估知识图谱的关系表达、影响链路分析和可视化查询平台。
+
+将工序、设备、工位、工艺参数、质量指标、缺陷类型、生产批次、检测任务、评估结果等对象表达为图节点。
+
+将工序先后关系、参数归属关系、参数影响质量指标、参数诱发缺陷、缺陷属于工序、批次经过工序等表达为图关系。
+
+将规则引擎、Apriori 关联挖掘和图注意力网络 GAT 输出的影响权重落到关系属性中，实现可解释的质量因素分析。
+
+支撑软件平台中的质量合格性评估、研判性评估、预测性评估、缺陷溯源、参数推荐和图谱可视化。
+
+1.2 建设边界
+
+PostgreSQL 负责保存完整的业务明细数据，例如工序执行记录、参数采集值、质量检测值、缺陷检测记录、评估任务、优化结果等；Neo4j 重点保存“对象之间的关系网络”和“关系权重”。因此，Neo4j 不建议保存所有原始时序数据、图片文件、视频流和大规模日志，只保存它们的索引、摘要或业务引用 ID。
+
+系统
+
+定位
+
+主要内容
+
+不建议存储
+
+PostgreSQL
+
+业务主库
+
+批次、单件、工序执行、参数值、检测结果、缺陷记录、评估结果、优化结果
+
+无
+
+Neo4j
+
+知识图谱库
+
+工序、参数、缺陷、质量指标、设备、批次之间的语义关系和影响权重
+
+大图片、长视频、完整时序曲线、全量设备日志
+
+文件/对象存储
+
+多模态资源库
+
+原始图片、缺陷图片、视频、模型文件、报告文件
+
+复杂业务关系
+
+深度学习/GAT 服务
+
+模型分析层
+
+缺陷识别、关系权重学习、质量预测、参数优化
+
+长期业务数据主存储
+
+2. 总体架构设计
+
+整体架构建议采用“PostgreSQL 业务数据层 + ETL/规则处理层 + Neo4j 知识图谱层 + GAT 图学习层 + 软件平台应用层”的五层结构。
+
+多源数据采集
+
+  ├─ 设备接口 / RESTful API
+
+  ├─ Excel 批量导入
+
+  ├─ AOI / 视觉检测系统
+
+  ├─ 人工录入
+
+  └─ 仿真与优化算法输出
+
+        ↓
+
+PostgreSQL 业务主库
+
+  ├─ core：工序、设备、参数、产品等基础字典
+
+  ├─ prod：批次、单件、工序执行、参数采集
+
+  ├─ qc：质量指标、检测任务、缺陷记录
+
+  ├─ eval：质量评估、预测、优化结果
+
+  └─ kg：图谱实体、关系、GAT 权重中间表
+
+        ↓
+
+Neo4j 知识图谱
+
+  ├─ 节点：工序、参数、缺陷、指标、设备、批次、评估结果
+
+  ├─ 关系：NEXT、HAS_PARAMETER、AFFECTS、CAUSES、HAS_DEFECT 等
+
+  └─ 权重：rule_weight、apriori_confidence、gat_weight
+
+        ↓
+
+业务应用
+
+  ├─ 缺陷溯因
+
+  ├─ 质量影响因素排序
+
+  ├─ 工艺参数研判
+
+  ├─ 质量预测解释
+
+  └─ 工艺参数优化建议
+
+2.1 关系主线
+
+图谱主线建议围绕“产品/批次 - 工序执行 - 工序 - 参数 - 质量指标/缺陷 - 评估结果 - 优化建议”展开。这样既能表达静态工艺知识，也能表达实际生产批次的动态质量表现。
+
+(ProductType)-[:HAS_BATCH]-&gt;(Batch)-[:HAS_RUN]-&gt;(ProcessRun)
+
+(ProcessRun)-[:EXECUTES_STEP]-&gt;(ProcessStep)
+
+(ProcessStep)-[:HAS_PARAMETER]-&gt;(Parameter)
+
+(ProcessStep)-[:HAS_QUALITY_METRIC]-&gt;(QualityMetric)
+
+(ProcessStep)-[:HAS_DEFECT]-&gt;(DefectType)
+
+(Parameter)-[:AFFECTS]-&gt;(QualityMetric)
+
+(Parameter)-[:CAUSES]-&gt;(DefectType)
+
+(Batch)-[:HAS_ASSESSMENT]-&gt;(AssessmentResult)
+
+(OptimizationResult)-[:RECOMMENDS]-&gt;(Parameter)
+
+3. 图谱数据来源与同步路径
+
+图谱对象
+
+来源 PostgreSQL 表/视图
+
+同步方式
+
+备注
+
+工序节点
+
+core.process_step
+
+全量初始化 + 增量更新
+
+工序顺序、是否检测工序等属于稳定字典数据
+
+参数节点
+
+core.parameter_def
+
+全量初始化 + 增量更新
+
+包括工艺参数、质量参数、设备参数、仿真参数
+
+质量指标节点
+
+qc.quality_metric_def
+
+全量初始化 + 增量更新
+
+用于合格性评估和质量预测
+
+缺陷类型节点
+
+qc.defect_type
+
+全量初始化 + 增量更新
+
+AOI 和成品检测缺陷类型
+
+设备/工位节点
+
+core.equipment / core.workstation
+
+全量初始化 + 增量更新
+
+用于工序追溯和设备异常关联
+
+批次/工序执行节点
+
+prod.production_batch / prod.process_run
+
+按批次增量导入
+
+用于实际生产追溯
+
+评估结果节点
+
+eval.assessment_result
+
+按任务增量导入
+
+用于合格性、研判性、预测性评估结果表达
+
+优化结果节点
+
+eval.optimization_result
+
+按任务增量导入
+
+用于记录推荐参数组合和 Pareto 解
+
+关系与权重
+
+kg.kg_relation / kg.gat_relation_weight
+
+规则 + 挖掘 + 模型输出
+
+Neo4j 关系属性更新的核心来源
+
+3.1 推荐的 PostgreSQL 中间视图
+
+为了避免业务表直接和 Neo4j 导入脚本强耦合，建议在 PostgreSQL 中维护两个导出视图：kg.v_neo4j_node_export 和 kg.v_neo4j_relation_export。视图负责将业务表中的对象统一转成 node_id、node_label、properties 和 relation_type、source_node_id、target_node_id、weight 等通用字段。
+
+-- 节点导出视图示例
+
+CREATE OR REPLACE VIEW kg.v_neo4j_node_export AS
+
+SELECT
+
+    entity_id::text AS node_id,
+
+    entity_type AS node_label,
+
+    entity_code,
+
+    entity_name,
+
+    ref_schema,
+
+    ref_table,
+
+    ref_id::text AS ref_id,
+
+    properties
+
+FROM kg.kg_entity;
+
+-- 关系导出视图示例
+
+CREATE OR REPLACE VIEW kg.v_neo4j_relation_export AS
+
+SELECT
+
+    relation_id::text AS relation_id,
+
+    source_entity_id::text AS source_node_id,
+
+    target_entity_id::text AS target_node_id,
+
+    relation_type,
+
+    relation_weight,
+
+    confidence,
+
+    evidence_source,
+
+    evidence_payload
+
+FROM kg.kg_relation;
+
+4. Neo4j 节点模型设计
+
+节点标签采用英文 PascalCase 命名，主键属性使用业务来源表的 ID，例如 step_id、param_id、defect_type_id。为了便于统一导入，也可以额外保留 graph_id 或 node_id 作为跨表统一 ID。
+
+节点标签
+
+含义
+
+唯一属性
+
+来源表
+
+核心属性
+
+ProcessStep
+
+生产工序
+
+step_id
+
+core.process_step
+
+step_code, step_name, step_order, is_inspection
+
+Parameter
+
+工艺/设备/质量/仿真参数
+
+param_id
+
+core.parameter_def
+
+param_code, param_name, param_category, data_type, unit, limits
+
+QualityMetric
+
+质量指标
+
+metric_id
+
+qc.quality_metric_def
+
+metric_code, metric_name, unit, lower_limit, upper_limit, target_value
+
+DefectType
+
+缺陷类型
+
+defect_type_id
+
+qc.defect_type
+
+defect_code, defect_name, defect_category, default_severity
+
+Equipment
+
+设备
+
+equipment_id
+
+core.equipment
+
+equipment_code, equipment_name, equipment_type
+
+Workstation
+
+工位
+
+station_id
+
+core.workstation
+
+station_code, station_name, location
+
+ProductType
+
+产品型号
+
+product_type_id
+
+core.product_type
+
+product_code, product_name, product_spec
+
+Batch
+
+生产批次
+
+batch_id
+
+prod.production_batch
+
+batch_no, product_type_id, start_time, end_time, batch_status
+
+ProductUnit
+
+单件产品
+
+unit_id
+
+prod.product_unit
+
+serial_no, batch_id, unit_status
+
+ProcessRun
+
+工序执行记录
+
+run_id
+
+prod.process_run
+
+run_no, start_time, end_time, run_status
+
+InspectionTask
+
+检测任务
+
+inspection_id
+
+qc.inspection_task
+
+inspection_type, model_name, model_version, result_status
+
+AssessmentResult
+
+质量评估结果
+
+result_id
+
+eval.assessment_result
+
+assessment_score, pass_probability, is_pass, risk_level
+
+OptimizationResult
+
+工艺优化结果
+
+result_id
+
+eval.optimization_result
+
+algorithm_name, pareto_rank, feasible_flag
+
+4.1 节点分层说明
+
+层级
+
+节点类型
+
+作用
+
+静态知识层
+
+ProcessStep、Parameter、QualityMetric、DefectType、Equipment、Workstation、ProductType
+
+表达工艺知识、参数定义、质量标准、缺陷类型和设备配置，变化频率较低。
+
+生产实例层
+
+Batch、ProductUnit、ProcessRun、InspectionTask
+
+表达实际生产过程中某批次、某单件、某工序的运行和检测情况。
+
+分析结果层
+
+AssessmentResult、OptimizationResult
+
+表达模型评估、质量预测、超多目标优化算法输出，用于前端展示和决策追溯。
+
+4.2 关键工序节点示例
+
+结合当前项目的数据范围，建议至少初始化以下关键工序节点：金属化浆料设计与制备、流延、机械打孔、激光打孔、通孔 AOI、填孔、印刷、填孔印刷 AOI、层压、叠片、烧结、成品检测。
+
+5. Neo4j 关系模型设计
+
+关系类型采用全大写加下划线命名。方向应尽量表达业务语义，例如“工序包含参数”从 ProcessStep 指向 Parameter，“参数影响质量指标”从 Parameter 指向 QualityMetric。
+
+关系类型
+
+方向
+
+含义
+
+核心属性
+
+生成来源
+
+NEXT
+
+ProcessStep → ProcessStep
+
+工序先后关系
+
+order_gap, source
+
+工序顺序字典
+
+HAS_PARAMETER
+
+ProcessStep → Parameter
+
+工序包含参数
+
+source, updated_at
+
+参数字典
+
+HAS_QUALITY_METRIC
+
+ProcessStep → QualityMetric
+
+工序包含质量指标
+
+source, updated_at
+
+质量指标字典
+
+HAS_DEFECT
+
+ProcessStep → DefectType
+
+工序可能产生或检测到缺陷
+
+source, default_weight
+
+缺陷字典/检测规则
+
+USES_EQUIPMENT
+
+ProcessStep → Equipment
+
+工序使用设备
+
+source
+
+设备台账/工艺配置
+
+RUNS_AT
+
+ProcessRun → Workstation
+
+工序执行发生在工位
+
+start_time, end_time
+
+生产执行记录
+
+EXECUTES_STEP
+
+ProcessRun → ProcessStep
+
+工序执行记录对应工序
+
+run_status
+
+生产执行记录
+
+HAS_RUN
+
+Batch → ProcessRun
+
+批次包含工序执行记录
+
+sequence_no
+
+生产执行记录
+
+HAS_UNIT
+
+Batch → ProductUnit
+
+批次包含单件产品
+
+created_at
+
+单件记录
+
+HAS_INSPECTION
+
+ProcessRun → InspectionTask
+
+工序执行产生检测任务
+
+inspection_type
+
+检测任务
+
+DETECTED_DEFECT
+
+InspectionTask → DefectType
+
+检测任务发现缺陷类型
+
+defect_count, confidence, severity
+
+缺陷记录
+
+MEASURES
+
+InspectionTask → QualityMetric
+
+检测任务测量质量指标
+
+value, is_pass, deviation
+
+质量实测
+
+AFFECTS
+
+Parameter → QualityMetric
+
+参数影响质量指标
+
+weight, confidence, evidence_source, gat_weight
+
+规则/Apriori/GAT
+
+CAUSES
+
+Parameter → DefectType
+
+参数异常可能导致缺陷
+
+weight, confidence, evidence_source, gat_weight
+
+规则/Apriori/GAT
+
+CO_OCCURS_WITH
+
+Parameter/DefectType → Parameter/DefectType
+
+频繁共现关系
+
+support, confidence, lift
+
+Apriori
+
+HAS_ASSESSMENT
+
+Batch/ProcessRun → AssessmentResult
+
+产生质量评估结果
+
+task_type, model_version
+
+评估任务
+
+RECOMMENDS
+
+OptimizationResult → Parameter
+
+优化结果推荐调整参数
+
+recommended_value, original_value, delta
+
+超多目标优化算法
+
+5.1 核心图谱关系链
+
+// 工艺知识链
+
+(ProcessStep)-[:NEXT]-&gt;(ProcessStep)
+
+(ProcessStep)-[:HAS_PARAMETER]-&gt;(Parameter)
+
+(ProcessStep)-[:HAS_QUALITY_METRIC]-&gt;(QualityMetric)
+
+(ProcessStep)-[:HAS_DEFECT]-&gt;(DefectType)
+
+(Parameter)-[:AFFECTS]-&gt;(QualityMetric)
+
+(Parameter)-[:CAUSES]-&gt;(DefectType)
+
+// 生产实例链
+
+(Batch)-[:HAS_RUN]-&gt;(ProcessRun)-[:EXECUTES_STEP]-&gt;(ProcessStep)
+
+(ProcessRun)-[:HAS_INSPECTION]-&gt;(InspectionTask)
+
+(InspectionTask)-[:DETECTED_DEFECT]-&gt;(DefectType)
+
+(InspectionTask)-[:MEASURES]-&gt;(QualityMetric)
+
+// 决策分析链
+
+(Batch)-[:HAS_ASSESSMENT]-&gt;(AssessmentResult)
+
+(OptimizationResult)-[:RECOMMENDS]-&gt;(Parameter)
+
+6. 节点与关系属性规范
+
+6.1 通用节点属性
+
+属性名
+
+类型
+
+说明
+
+是否建议
+
+node_id
+
+string
+
+统一节点 ID，可采用 entity_type + ref_id 生成
+
+推荐
+
+name
+
+string
+
+节点展示名称，用于前端图谱可视化
+
+推荐
+
+code
+
+string
+
+业务编码，例如 step_code、param_code、defect_code
+
+推荐
+
+source_system
+
+string
+
+来源系统，例如 PG、AOI、MANUAL、MODEL
+
+推荐
+
+ref_table
+
+string
+
+来源 PostgreSQL 表名
+
+推荐
+
+ref_id
+
+string/int
+
+来源 PostgreSQL 业务主键
+
+推荐
+
+properties
+
+map/json
+
+扩展属性，适合保存非固定字段
+
+可选
+
+created_at
+
+datetime
+
+节点创建时间
+
+推荐
+
+updated_at
+
+datetime
+
+节点更新时间
+
+推荐
+
+6.2 通用关系属性
+
+属性名
+
+类型
+
+说明
+
+典型来源
+
+relation_id
+
+string
+
+关系唯一 ID，用于从 PostgreSQL 同步更新
+
+kg.kg_relation
+
+weight
+
+float
+
+综合关系权重，适合业务查询排序
+
+规则/GAT 综合
+
+confidence
+
+float
+
+关系可信度
+
+规则引擎/Apriori/模型
+
+support
+
+float
+
+频繁项集支持度
+
+Apriori
+
+lift
+
+float
+
+提升度，用于判断共现强弱
+
+Apriori
+
+gat_weight
+
+float
+
+图注意力网络输出的注意力权重
+
+GAT
+
+evidence_source
+
+string
+
+证据来源：RULE、APRIORI、GAT、EXPERT、MANUAL
+
+ETL/算法
+
+evidence_payload
+
+map/json
+
+证据详情，例如规则编号、样本数、阈值、模型版本
+
+ETL/算法
+
+hidden_relation_flag
+
+boolean
+
+是否为模型挖掘出的隐性关系
+
+GAT/Apriori
+
+updated_at
+
+datetime
+
+关系最后更新时间
+
+同步程序
+
+6.3 权重解释建议
+
+为了便于解释，建议把关系权重分为三类：规则权重、统计权重和模型权重。最终展示时可使用综合权重 final_weight，也可以分别展示 evidence_source 和 gat_weight。
+
+final_weight = 0.4 * rule_weight + 0.3 * apriori_confidence + 0.3 * gat_weight
+
+说明：
+
+- rule_weight：来自专家规则或规则引擎，强调确定性知识；
+
+- apriori_confidence：来自频繁共现关系，强调统计相关性；
+
+- gat_weight：来自图注意力网络，强调模型学习到的潜在影响强度。
+
+7. 约束、索引与命名规范
+
+7.1 唯一约束
+
+Neo4j 导入时必须先创建唯一约束，否则 MERGE 容易产生重复节点，也会降低导入性能。
+
+CREATE CONSTRAINT process_step_id IF NOT EXISTS
+
+FOR (n:ProcessStep) REQUIRE n.step_id IS UNIQUE;
+
+CREATE CONSTRAINT parameter_id IF NOT EXISTS
+
+FOR (n:Parameter) REQUIRE n.param_id IS UNIQUE;
+
+CREATE CONSTRAINT quality_metric_id IF NOT EXISTS
+
+FOR (n:QualityMetric) REQUIRE n.metric_id IS UNIQUE;
+
+CREATE CONSTRAINT defect_type_id IF NOT EXISTS
+
+FOR (n:DefectType) REQUIRE n.defect_type_id IS UNIQUE;
+
+CREATE CONSTRAINT equipment_id IF NOT EXISTS
+
+FOR (n:Equipment) REQUIRE n.equipment_id IS UNIQUE;
+
+CREATE CONSTRAINT workstation_id IF NOT EXISTS
+
+FOR (n:Workstation) REQUIRE n.station_id IS UNIQUE;
+
+CREATE CONSTRAINT product_type_id IF NOT EXISTS
+
+FOR (n:ProductType) REQUIRE n.product_type_id IS UNIQUE;
+
+CREATE CONSTRAINT batch_id IF NOT EXISTS
+
+FOR (n:Batch) REQUIRE n.batch_id IS UNIQUE;
+
+CREATE CONSTRAINT process_run_id IF NOT EXISTS
+
+FOR (n:ProcessRun) REQUIRE n.run_id IS UNIQUE;
+
+7.2 查询索引建议
+
+CREATE INDEX process_step_code IF NOT EXISTS
+
+FOR (n:ProcessStep) ON (n.step_code);
+
+CREATE INDEX parameter_name IF NOT EXISTS
+
+FOR (n:Parameter) ON (n.param_name);
+
+CREATE INDEX defect_name IF NOT EXISTS
+
+FOR (n:DefectType) ON (n.defect_name);
+
+CREATE INDEX batch_no IF NOT EXISTS
+
+FOR (n:Batch) ON (n.batch_no);
+
+CREATE INDEX assessment_risk_level IF NOT EXISTS
+
+FOR (n:AssessmentResult) ON (n.risk_level);
+
+7.3 命名规范
+
+对象
+
+命名方式
+
+示例
+
+节点标签
+
+PascalCase
+
+ProcessStep, QualityMetric, DefectType
+
+关系类型
+
+全大写下划线
+
+HAS_PARAMETER, AFFECTS, CAUSES
+
+节点属性
+
+小写下划线
+
+step_id, param_name, risk_level
+
+关系属性
+
+小写下划线
+
+gat_weight, evidence_source, updated_at
+
+业务编码
+
+建议固定前缀
+
+P01, PARAM_LASER_POWER, DEF_HOLE_OFFSET
+
+8. PostgreSQL 到 Neo4j 的导入方案
+
+推荐两种导入方式：第一种是后端服务直接从 PostgreSQL 查询并调用 Neo4j Driver 写入；第二种是由 PostgreSQL 导出 CSV，再使用 Neo4j LOAD CSV 导入。开发阶段可用 CSV，正式系统建议使用后端同步服务，便于做增量、重试和日志记录。
+
+8.1 全量初始化流程
+
+步骤 1：清空或新建 Neo4j 数据库，并创建约束和索引。
+
+步骤 2：从 PostgreSQL 导出静态字典：工序、参数、质量指标、缺陷类型、设备、工位、产品型号。
+
+步骤 3：导入静态节点和静态关系，例如 NEXT、HAS_PARAMETER、HAS_DEFECT、HAS_QUALITY_METRIC。
+
+步骤 4：导入已有生产实例数据，例如批次、工序执行、检测任务、缺陷记录和评估结果。
+
+步骤 5：导入规则、Apriori 和 GAT 产生的 AFFECTS、CAUSES、CO_OCCURS_WITH 等关系权重。
+
+8.2 工序节点导入示例
+
+MERGE (s:ProcessStep {step_id: $step_id})
+
+SET
+
+    s.step_code = $step_code,
+
+    s.step_name = $step_name,
+
+    s.step_order = $step_order,
+
+    s.is_inspection = $is_inspection,
+
+    s.source_system = 'PostgreSQL',
+
+    s.updated_at = datetime();
+
+8.3 参数节点导入示例
+
+MERGE (p:Parameter {param_id: $param_id})
+
+SET
+
+    p.param_code = $param_code,
+
+    p.param_name = $param_name,
+
+    p.param_category = $param_category,
+
+    p.data_type = $data_type,
+
+    p.unit = $unit,
+
+    p.lower_limit = $lower_limit,
+
+    p.upper_limit = $upper_limit,
+
+    p.source_system = 'PostgreSQL',
+
+    p.updated_at = datetime();
+
+8.4 工序包含参数关系导入示例
+
+MATCH (s:ProcessStep {step_id: $step_id})
+
+MATCH (p:Parameter {param_id: $param_id})
+
+MERGE (s)-[r:HAS_PARAMETER]-&gt;(p)
+
+SET
+
+    r.source = 'PG_DICT',
+
+    r.updated_at = datetime();
+
+8.5 参数影响质量指标关系导入示例
+
+MATCH (p:Parameter {param_id: $param_id})
+
+MATCH (m:QualityMetric {metric_id: $metric_id})
+
+MERGE (p)-[r:AFFECTS]-&gt;(m)
+
+SET
+
+    r.relation_id = $relation_id,
+
+    r.weight = $relation_weight,
+
+    r.confidence = $confidence,
+
+    r.evidence_source = $evidence_source,
+
+    r.evidence_payload = $evidence_payload,
+
+    r.updated_at = datetime();
+
+9. GAT 分析结果在 Neo4j 中的表达
+
+图注意力网络 GAT 的主要输出是节点间的注意力权重。该权重不一定改变原有图谱结构，但应更新关系属性，或在发现隐性关系时新增 AFFECTS / CAUSES / CO_OCCURS_WITH 关系。
+
+9.1 GAT 输出字段建议
+
+字段
+
+含义
+
+示例
+
+source_node_id
+
+源节点 ID
+
+Parameter:laser_power
+
+target_node_id
+
+目标节点 ID
+
+QualityMetric:hole_taper
+
+relation_type
+
+建议关系类型
+
+AFFECTS
+
+attention_weight
+
+注意力权重
+
+0.82
+
+model_name
+
+模型名称
+
+GAT_quality_factor
+
+model_version
+
+模型版本
+
+v1.0
+
+hidden_relation_flag
+
+是否隐性关系
+
+true/false
+
+evidence_payload
+
+样本数、训练集、阈值等补充信息
+
+{"sample_size": 1200}
+
+9.2 GAT 权重更新 Cypher
+
+MATCH (a {node_id: $source_node_id})-[r]-&gt;(b {node_id: $target_node_id})
+
+WHERE type(r) = $relation_type
+
+SET
+
+    r.gat_weight = $attention_weight,
+
+    r.model_name = $model_name,
+
+    r.model_version = $model_version,
+
+    r.hidden_relation_flag = $hidden_relation_flag,
+
+    r.gat_updated_at = datetime();
+
+9.3 新增隐性关系 Cypher
+
+MATCH (a {node_id: $source_node_id})
+
+MATCH (b {node_id: $target_node_id})
+
+MERGE (a)-[r:AFFECTS]-&gt;(b)
+
+SET
+
+    r.gat_weight = $attention_weight,
+
+    r.confidence = $confidence,
+
+    r.evidence_source = 'GAT',
+
+    r.hidden_relation_flag = true,
+
+    r.model_version = $model_version,
+
+    r.updated_at = datetime();
+
+对于 GAT 新增的隐性关系，建议设置 hidden_relation_flag = true，并保留 evidence_source = GAT。前端展示时可以用不同样式区分“专家规则关系”和“模型发现关系”。
+
+10. 典型查询与业务应用
+
+10.1 查询某缺陷可能由哪些参数导致
+
+MATCH (p:Parameter)-[r:CAUSES]-&gt;(d:DefectType)
+
+WHERE d.defect_name CONTAINS $defect_name
+
+RETURN
+
+    p.param_name AS 参数,
+
+    p.param_category AS 参数类别,
+
+    r.weight AS 综合权重,
+
+    r.gat_weight AS GAT权重,
+
+    r.confidence AS 可信度,
+
+    r.evidence_source AS 证据来源
+
+ORDER BY coalesce(r.gat_weight, r.weight, r.confidence) DESC
+
+LIMIT 20;
+
+10.2 查询影响某质量指标的关键工艺参数
+
+MATCH (p:Parameter)-[r:AFFECTS]-&gt;(m:QualityMetric)
+
+WHERE m.metric_name CONTAINS $metric_name
+
+RETURN
+
+    p.param_name AS 参数,
+
+    p.unit AS 单位,
+
+    r.weight AS 综合权重,
+
+    r.gat_weight AS GAT权重,
+
+    r.evidence_source AS 来源
+
+ORDER BY coalesce(r.gat_weight, r.weight) DESC
+
+LIMIT 20;
+
+10.3 查询某工序的完整质量知识子图
+
+MATCH (s:ProcessStep {step_name: $step_name})
+
+OPTIONAL MATCH (s)-[:HAS_PARAMETER]-&gt;(p:Parameter)
+
+OPTIONAL MATCH (s)-[:HAS_QUALITY_METRIC]-&gt;(m:QualityMetric)
+
+OPTIONAL MATCH (s)-[:HAS_DEFECT]-&gt;(d:DefectType)
+
+RETURN s, collect(DISTINCT p) AS 参数, collect(DISTINCT m) AS 质量指标, collect(DISTINCT d) AS 缺陷类型;
+
+10.4 查询某批次的生产与缺陷追溯链
+
+MATCH (b:Batch {batch_no: $batch_no})-[:HAS_RUN]-&gt;(run:ProcessRun)-[:EXECUTES_STEP]-&gt;(s:ProcessStep)
+
+OPTIONAL MATCH (run)-[:HAS_INSPECTION]-&gt;(it:InspectionTask)-[dr:DETECTED_DEFECT]-&gt;(d:DefectType)
+
+RETURN
+
+    b.batch_no AS 批次号,
+
+    run.run_no AS 工序执行号,
+
+    s.step_name AS 工序,
+
+    d.defect_name AS 缺陷,
+
+    dr.defect_count AS 缺陷数量,
+
+    dr.confidence AS 置信度
+
+ORDER BY s.step_order;
+
+10.5 查询质量风险最高的批次
+
+MATCH (b:Batch)-[:HAS_ASSESSMENT]-&gt;(ar:AssessmentResult)
+
+RETURN
+
+    b.batch_no AS 批次号,
+
+    ar.assessment_score AS 质量评分,
+
+    ar.pass_probability AS 合格概率,
+
+    ar.risk_level AS 风险等级,
+
+    ar.conclusion AS 结论
+
+ORDER BY ar.pass_probability ASC, ar.assessment_score ASC
+
+LIMIT 20;
+
+10.6 查询优化算法推荐的参数调整方案
+
+MATCH (or:OptimizationResult)-[r:RECOMMENDS]-&gt;(p:Parameter)
+
+WHERE or.result_id = $optimization_result_id
+
+RETURN
+
+    p.param_name AS 参数,
+
+    p.unit AS 单位,
+
+    r.original_value AS 原始值,
+
+    r.recommended_value AS 推荐值,
+
+    r.delta AS 调整幅度,
+
+    or.algorithm_name AS 算法,
+
+    or.pareto_rank AS Pareto排名
+
+ORDER BY or.pareto_rank, abs(r.delta) DESC;
+
+11. 数据更新策略与运行维护建议
+
+11.1 更新策略
+
+数据类型
+
+更新频率
+
+同步策略
+
+工序、参数、质量指标、缺陷类型等字典数据
+
+低频
+
+手动触发或每日全量校验同步
+
+批次、工序执行、检测任务、缺陷记录
+
+高频
+
+按批次或按时间戳增量同步
+
+质量评估结果、预测结果、优化结果
+
+中频
+
+评估任务完成后实时写入 Neo4j
+
+规则关系、Apriori 关系
+
+中低频
+
+规则更新或数据挖掘任务完成后批量更新
+
+GAT 权重
+
+按模型训练/推理批次
+
+训练或推理完成后更新关系属性
+
+11.2 增量同步字段建议
+
+PostgreSQL 中每张需要同步到 Neo4j 的表建议保留 created_at、updated_at、deleted_flag 或 sync_status 字段。同步程序记录 last_sync_time，每次只抽取 updated_at 大于 last_sync_time 的数据。
+
+-- 增量同步基本逻辑
+
+SELECT *
+
+FROM kg.v_neo4j_node_export
+
+WHERE updated_at &gt; :last_sync_time;
+
+SELECT *
+
+FROM kg.v_neo4j_relation_export
+
+WHERE updated_at &gt; :last_sync_time;
+
+11.3 运行维护建议
+
+保持 PostgreSQL 为业务数据主库，Neo4j 中的数据可以重建，不应成为唯一主数据源。
+
+所有 Neo4j 节点和关系都应保留来源表和来源 ID，保证可追溯。
+
+GAT 权重需要记录模型版本，否则不同版本模型输出的权重无法对比。
+
+高频生产数据不要无限制写入 Neo4j，建议按批次、按工序执行摘要导入，原始曲线仍保存在 PostgreSQL 或文件存储。
+
+前端可视化图谱应限制返回节点数量，避免一次性展示全图造成性能问题。
+
+12. 附录：可执行 Cypher 脚本模板
+
+12.1 初始化约束与索引
+
+CREATE CONSTRAINT process_step_id IF NOT EXISTS FOR (n:ProcessStep) REQUIRE n.step_id IS UNIQUE;
+
+CREATE CONSTRAINT parameter_id IF NOT EXISTS FOR (n:Parameter) REQUIRE n.param_id IS UNIQUE;
+
+CREATE CONSTRAINT quality_metric_id IF NOT EXISTS FOR (n:QualityMetric) REQUIRE n.metric_id IS UNIQUE;
+
+CREATE CONSTRAINT defect_type_id IF NOT EXISTS FOR (n:DefectType) REQUIRE n.defect_type_id IS UNIQUE;
+
+CREATE CONSTRAINT equipment_id IF NOT EXISTS FOR (n:Equipment) REQUIRE n.equipment_id IS UNIQUE;
+
+CREATE CONSTRAINT workstation_id IF NOT EXISTS FOR (n:Workstation) REQUIRE n.station_id IS UNIQUE;
+
+CREATE CONSTRAINT product_type_id IF NOT EXISTS FOR (n:ProductType) REQUIRE n.product_type_id IS UNIQUE;
+
+CREATE CONSTRAINT batch_id IF NOT EXISTS FOR (n:Batch) REQUIRE n.batch_id IS UNIQUE;
+
+CREATE CONSTRAINT product_unit_id IF NOT EXISTS FOR (n:ProductUnit) REQUIRE n.unit_id IS UNIQUE;
+
+CREATE CONSTRAINT process_run_id IF NOT EXISTS FOR (n:ProcessRun) REQUIRE n.run_id IS UNIQUE;
+
+CREATE CONSTRAINT inspection_id IF NOT EXISTS FOR (n:InspectionTask) REQUIRE n.inspection_id IS UNIQUE;
+
+CREATE CONSTRAINT assessment_result_id IF NOT EXISTS FOR (n:AssessmentResult) REQUIRE n.result_id IS UNIQUE;
+
+CREATE CONSTRAINT optimization_result_id IF NOT EXISTS FOR (n:OptimizationResult) REQUIRE n.result_id IS UNIQUE;
+
+CREATE INDEX parameter_name IF NOT EXISTS FOR (n:Parameter) ON (n.param_name);
+
+CREATE INDEX defect_name IF NOT EXISTS FOR (n:DefectType) ON (n.defect_name);
+
+CREATE INDEX batch_no IF NOT EXISTS FOR (n:Batch) ON (n.batch_no);
+
+12.2 典型节点写入模板
+
+// ProcessStep
+
+MERGE (s:ProcessStep {step_id: $step_id})
+
+SET s.step_code = $step_code,
+
+    s.step_name = $step_name,
+
+    s.step_order = $step_order,
+
+    s.is_inspection = $is_inspection,
+
+    s.updated_at = datetime();
+
+// Parameter
+
+MERGE (p:Parameter {param_id: $param_id})
+
+SET p.param_code = $param_code,
+
+    p.param_name = $param_name,
+
+    p.param_category = $param_category,
+
+    p.unit = $unit,
+
+    p.lower_limit = $lower_limit,
+
+    p.upper_limit = $upper_limit,
+
+    p.updated_at = datetime();
+
+// DefectType
+
+MERGE (d:DefectType {defect_type_id: $defect_type_id})
+
+SET d.defect_code = $defect_code,
+
+    d.defect_name = $defect_name,
+
+    d.defect_category = $defect_category,
+
+    d.default_severity = $default_severity,
+
+    d.updated_at = datetime();
+
+12.3 典型关系写入模板
+
+// 工序先后关系
+
+MATCH (a:ProcessStep {step_id: $source_step_id})
+
+MATCH (b:ProcessStep {step_id: $target_step_id})
+
+MERGE (a)-[r:NEXT]-&gt;(b)
+
+SET r.order_gap = $order_gap,
+
+    r.source = 'PROCESS_ORDER',
+
+    r.updated_at = datetime();
+
+// 参数影响质量指标
+
+MATCH (p:Parameter {param_id: $param_id})
+
+MATCH (m:QualityMetric {metric_id: $metric_id})
+
+MERGE (p)-[r:AFFECTS]-&gt;(m)
+
+SET r.weight = $weight,
+
+    r.confidence = $confidence,
+
+    r.evidence_source = $evidence_source,
+
+    r.gat_weight = $gat_weight,
+
+    r.updated_at = datetime();
+
+// 参数导致缺陷
+
+MATCH (p:Parameter {param_id: $param_id})
+
+MATCH (d:DefectType {defect_type_id: $defect_type_id})
+
+MERGE (p)-[r:CAUSES]-&gt;(d)
+
+SET r.weight = $weight,
+
+    r.confidence = $confidence,
+
+    r.evidence_source = $evidence_source,
+
+    r.gat_weight = $gat_weight,
+
+    r.updated_at = datetime();
+
+12.4 与软件平台接口建议
+
+接口功能
+
+输入参数
+
+Neo4j 查询目标
+
+返回结果
+
+缺陷溯因
+
+defect_name / defect_type_id
+
+Parameter -[:CAUSES]-&gt; DefectType
+
+可能原因参数、权重、证据来源
+
+质量指标影响因素排序
+
+metric_name / metric_id
+
+Parameter -[:AFFECTS]-&gt; QualityMetric
+
+关键参数排序、权重、阈值
+
+工序知识子图
+
+step_id / step_name
+
+ProcessStep 周边一跳或两跳节点
+
+工序、参数、指标、缺陷、设备
+
+批次追溯
+
+batch_no
+
+Batch - ProcessRun - InspectionTask - DefectType
+
+工序链、检测结果、缺陷统计
+
+优化建议解释
+
+optimization_result_id
+
+OptimizationResult -[:RECOMMENDS]-&gt; Parameter
+
+推荐参数、调整幅度、算法信息
+
+说明：本文档为 Neo4j 图数据库设计 V1.0，可作为后续开发 Neo4j 初始化脚本、PostgreSQL 同步脚本、GAT 权重更新脚本和软件平台图谱查询接口的基础。
