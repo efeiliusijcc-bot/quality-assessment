@@ -1,5 +1,3 @@
-import { mockApiSuccess } from '@/api/_mock';
-import { isMockEnabled } from '@/constants/env';
 import { request } from '@/utils/request';
 
 export interface DetectionResult {
@@ -40,46 +38,18 @@ export interface BatchDetectResponse {
 }
 
 export const fetchDefectSamples = async (): Promise<DefectSampleResponse[]> => {
-  if (!isMockEnabled) {
-    return request<DefectSampleResponse[]>({
-      url: '/defect/samples',
-      method: 'GET',
-    });
-  }
-
-  const response = await mockApiSuccess<DefectSampleResponse[]>([], 'success');
-  return response.data;
+  return request<DefectSampleResponse[]>({
+    url: '/defect/samples',
+    method: 'GET',
+  });
 };
 
 export const batchDetectDefects = async (items: BatchDetectRequestItem[]): Promise<BatchDetectResponse> => {
-  if (!isMockEnabled) {
-    return request<BatchDetectResponse>({
-      url: '/defect/detect/batch',
-      method: 'POST',
-      data: items,
-    });
-  }
-
-  const results: DefectSampleResponse[] = items.map((item, index) => ({
-    id: `mock-${index}`,
-    name: item.name,
-    mediaType: 'image',
-    batchNo: item.batchNo,
-    imageUrl: item.imageUrl,
-    results: [
-      { category: '虚焊', level: '严重', confidence: 92.3 + Math.random() * 5, location: '左上焊盘区域' },
-    ],
-    defects: [
-      { label: '虚焊', confidence: 0.92, bbox: [180, 160, 260, 120], level: '严重' },
-    ],
-    summary: '检测到严重虚焊风险，建议人工复核。',
-  }));
-
-  const response = await mockApiSuccess<BatchDetectResponse>(
-    { results, total: results.length, message: `批量检测完成，共 ${results.length} 张图像` },
-    'batch detection completed',
-  );
-  return response.data;
+  return request<BatchDetectResponse>({
+    url: '/defect/detect/batch',
+    method: 'POST',
+    data: items,
+  });
 };
 
 export interface DefectStatisticsResponse {
@@ -89,16 +59,8 @@ export interface DefectStatisticsResponse {
 }
 
 export const fetchDefectStatistics = async (): Promise<DefectStatisticsResponse> => {
-  if (!isMockEnabled) {
-    return request<DefectStatisticsResponse>({
-      url: '/defect/statistics',
-      method: 'GET',
-    });
-  }
-
-  const response = await mockApiSuccess<DefectStatisticsResponse>(
-    { totalSamples: 0, avgConfidence: 0, modelVersion: 'ResNet-50' },
-    'success',
-  );
-  return response.data;
+  return request<DefectStatisticsResponse>({
+    url: '/defect/statistics',
+    method: 'GET',
+  });
 };

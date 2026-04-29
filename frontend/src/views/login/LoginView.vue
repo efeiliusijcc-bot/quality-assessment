@@ -19,7 +19,7 @@
           <div class="text-sm tracking-[0.32em] text-cyan-300/80">SECURE ACCESS</div>
           <h2 class="mt-4 text-3xl font-semibold text-white">系统登录</h2>
           <p class="mt-3 text-sm leading-6 text-slate-400">
-            当前为步骤 1 基础架构演示，验证码与登录流程使用 Mock 逻辑占位。
+            请输入账号密码并完成验证码校验以登录系统。
           </p>
 
           <el-form

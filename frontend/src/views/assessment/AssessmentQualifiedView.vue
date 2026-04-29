@@ -215,7 +215,6 @@ import { Refresh } from '@element-plus/icons-vue';
 
 import { fetchAssessmentHistory, fetchQualifiedDashboard, type AssessmentHistoryItem, type QualifiedDashboardData } from '@/api/assessment';
 import PageIntroCard from '@/components/dashboard/PageIntroCard.vue';
-import { isMockEnabled } from '@/constants/env';
 import { useECharts } from '@/hooks/useECharts';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { useAssessmentStore } from '@/stores/assessment';
@@ -411,43 +410,14 @@ const handleSocketMessage = (event: MessageEvent) => {
 };
 
 const { status: socketStatus } = useWebSocket(createWebSocketUrl(), {
-  autoConnect: !isMockEnabled,
+  autoConnect: true,
   heartbeatInterval: 12000,
   pongTimeout: 6000,
   reconnectDelay: 3000,
   onMessage: handleSocketMessage,
 });
 
-let mockStreamTimer: number | null = null;
-
-const startMockStream = () => {
-  if (!isMockEnabled) {
-    return;
-  }
-
-  mockStreamTimer = window.setInterval(() => {
-    updateRollingSeries(
-      normalizeStreamMessage({
-        timestamp: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-        batchId: currentBatchId.value,
-        station: selectedStation.value,
-        temperature: 234 + (Math.random() - 0.5) * 4,
-        pressure: 4.2 + (Math.random() - 0.5) * 0.4,
-        current: 1.16 + (Math.random() - 0.5) * 0.12,
-      }),
-    );
-  }, config.value.refreshIntervalMs);
-};
-
-const stopMockStream = () => {
-  if (mockStreamTimer !== null) {
-    window.clearInterval(mockStreamTimer);
-    mockStreamTimer = null;
-  }
-};
-
 const connectionLabel = computed(() => {
-  if (isMockEnabled) return 'Mock 实时流';
   if (socketStatus.value === 'open') return 'WebSocket 已连接';
   if (socketStatus.value === 'reconnecting') return 'WebSocket 重连中';
   if (socketStatus.value === 'error') return 'WebSocket 异常';
@@ -455,7 +425,7 @@ const connectionLabel = computed(() => {
 });
 
 const connectionTagType = computed(() => {
-  if (isMockEnabled || socketStatus.value === 'open') return 'success';
+  if (socketStatus.value === 'open') return 'success';
   if (socketStatus.value === 'reconnecting') return 'warning';
   return 'danger';
 });
@@ -472,18 +442,8 @@ const loadDashboard = async () => {
   }
 };
 
-watch(
-  () => config.value.refreshIntervalMs,
-  () => {
-    if (!isMockEnabled) return;
-    stopMockStream();
-    startMockStream();
-  },
-);
-
 onMounted(() => {
   // 先显示页面，异步加载数据
-  startMockStream();
   
   // 异步加载，不阻塞页面渲染
   Promise.all([
@@ -491,8 +451,8 @@ onMounted(() => {
     assessmentStore.loadStations(),
   ]).then(() => {
     if (availableBatches.value.length > 0 && !selectedBatchId.value) {
-      selectedBatchId.value = availableBatches.value[0];
-      currentBatchId.value = availableBatches.value[0];
+      selectedBatchId.value = availableBatches.value[0] ?? '';
+      currentBatchId.value = availableBatches.value[0] ?? '';
     }
     if (selectedBatchId.value) {
       void loadDashboard();
@@ -504,7 +464,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  stopMockStream();
 });
 </script>
 

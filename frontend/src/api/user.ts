@@ -1,6 +1,4 @@
-import { mockApiFailure, mockApiSuccess } from '@/api/_mock';
 import { request } from '@/utils/request';
-import { isMockEnabled } from '@/constants/env';
 import { setAccessToken } from '@/utils/auth';
 
 export interface LoginPayload {
@@ -26,93 +24,44 @@ export interface LoginResult {
   user: UserProfile;
 }
 
-const captchaPool = new Map<string, string>();
-
-const createCaptcha = () => Math.random().toString(36).slice(2, 6).toUpperCase();
+interface LoginApiResponse {
+  token: string;
+  userId: string;
+  username: string;
+  realName: string;
+  roleCode: string;
+}
 
 export const getLoginCaptcha = async (): Promise<LoginCaptcha> => {
-  if (!isMockEnabled) {
-    return request<LoginCaptcha>({
-      url: '/user/captcha',
-      method: 'GET',
-    });
-  }
-
-  const captchaId = `captcha_${Date.now()}`;
-  const captchaCode = createCaptcha();
-  captchaPool.set(captchaId, captchaCode);
-
-  const response = await mockApiSuccess({
-    captchaId,
-    captchaCode,
+  return request<LoginCaptcha>({
+    url: '/user/captcha',
+    method: 'GET',
   });
-
-  return response.data;
 };
 
 export const loginByPassword = async (payload: LoginPayload): Promise<LoginResult> => {
-  if (!isMockEnabled) {
-    const result = await request<LoginResult>({
-      url: '/user/login',
-      method: 'POST',
-      data: payload,
-    });
-    setAccessToken(result.token);
-    return result;
-  }
-
-  const currentCaptcha = captchaPool.get(payload.captchaId);
-
-  if (!currentCaptcha || payload.captchaCode.toUpperCase() !== currentCaptcha) {
-    return mockApiFailure('验证码错误', 400);
-  }
-
-  const allowedUsers = ['admin', 'engineer', 'operator'];
-  if (!(allowedUsers.includes(payload.username) && payload.password === '123456')) {
-    return mockApiFailure('账号或密码错误', 401);
-  }
-
-  captchaPool.delete(payload.captchaId);
-
-  const role: UserProfile['role'] =
-    payload.username === 'engineer'
-      ? 'engineer'
-      : payload.username === 'operator'
-        ? 'operator'
-        : 'admin';
+  const res = await request<LoginApiResponse>({
+    url: '/user/login',
+    method: 'POST',
+    data: payload,
+  });
 
   const result: LoginResult = {
-    token: `mock-token-${Date.now()}`,
+    token: res.token,
     user: {
-      id:
-        payload.username === 'engineer'
-          ? 'U-002'
-          : payload.username === 'operator'
-            ? 'U-003'
-            : 'U-001',
-      name:
-        payload.username === 'engineer'
-          ? '工艺工程师'
-          : payload.username === 'operator'
-            ? '产线操作员'
-            : '系统管理员',
-      role,
+      id: res.userId,
+      name: res.realName || res.username,
+      role: res.roleCode as UserProfile['role'],
     },
   };
 
-  const response = await mockApiSuccess(result, '登录成功');
-  setAccessToken(response.data.token);
-  return response.data;
+  setAccessToken(result.token);
+  return result;
 };
 
 export const logoutRequest = async () => {
-  if (!isMockEnabled) {
-    return request<boolean>({
-      url: '/user/logout',
-      method: 'POST',
-    });
-  }
-
-  const response = await mockApiSuccess(true, '退出成功');
-  return response.data;
+  return request<boolean>({
+    url: '/user/logout',
+    method: 'POST',
+  });
 };

@@ -13,8 +13,8 @@
           <h2 class="panel-title">资源接入工作台</h2>
           <p class="panel-subtitle">根据现场场景切换录入方式，所有数据优先进入统一接入链路。</p>
         </div>
-        <el-tag :type="isMockEnabled ? 'info' : 'success'" effect="dark" round>
-          {{ isMockEnabled ? 'Mock 模式' : 'Production API' }}
+        <el-tag type="success" effect="dark" round>
+          Production API
         </el-tag>
       </div>
 
@@ -249,7 +249,6 @@ import { ElMessage, type FormInstance, type FormRules, type UploadFile, type Upl
 import { fetchUploadStatistics, importManufacturingExcel, submitManualRecord, submitOnlineUploadTask } from '@/api/upload';
 import { useAssessmentStore } from '@/stores/assessment';
 import PageIntroCard from '@/components/dashboard/PageIntroCard.vue';
-import { isMockEnabled } from '@/constants/env';
 
 const assessmentStore = useAssessmentStore();
 
@@ -301,7 +300,7 @@ const onlineStatusCards = computed(() => [
   {
     label: '流状态',
     value: onlineStreamStarted.value ? '采集中' : '待启动',
-    tip: isMockEnabled ? 'Mock / API 双模式兼容' : '真实接口已接入',
+    tip: '真实接口已接入',
   },
   {
     label: '目标批次',
