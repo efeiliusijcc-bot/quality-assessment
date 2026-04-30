@@ -195,8 +195,7 @@ public class ProductionService {
     }
 
     public List<DeviceLogResponse> listDeviceLogsByRun(UUID runId) {
-        return deviceLogRepository.findAll().stream()
-            .filter(l -> runId.equals(l.getRunId()))
+        return deviceLogRepository.findByRunId(runId).stream()
             .map(this::toDeviceLogResponse).toList();
     }
 

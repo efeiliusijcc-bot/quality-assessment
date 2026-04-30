@@ -107,7 +107,7 @@ service.interceptors.request.use(
       config.headers['Content-Type'] = 'application/json;charset=UTF-8';
     }
 
-    config.headers['X-Trace-Id'] = `${Date.now()}`;
+    config.headers['X-Trace-Id'] = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     return config;
   },
   (error) => {
@@ -119,6 +119,12 @@ service.interceptors.request.use(
 service.interceptors.response.use(
   (response) => {
     closeLoading();
+
+    // Blob 响应直接返回，不做 code 解包
+    if (response.config.responseType === 'blob') {
+      return response.data;
+    }
+
     const payload = response.data as ApiResponse<unknown>;
 
     if (typeof payload?.code !== 'number') {

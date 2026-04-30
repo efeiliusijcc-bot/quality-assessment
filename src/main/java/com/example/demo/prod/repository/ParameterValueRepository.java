@@ -8,4 +8,5 @@ import java.util.UUID;
 public interface ParameterValueRepository extends JpaRepository<ParameterValue, UUID> {
     List<ParameterValue> findByRunIdOrderByMeasuredAtAsc(UUID runId);
     List<ParameterValue> findByRunIdAndParamId(UUID runId, UUID paramId);
+    List<ParameterValue> findByRunIdInOrderByMeasuredAtAsc(List<UUID> runIds);
 }

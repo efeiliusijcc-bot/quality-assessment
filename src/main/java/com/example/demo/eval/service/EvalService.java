@@ -30,6 +30,8 @@ import java.util.*;
 @Service
 public class EvalService {
 
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER = new com.fasterxml.jackson.databind.ObjectMapper();
+
     private final AssessmentTaskRepository assessmentTaskRepo;
     private final AssessmentResultRepository assessmentResultRepo;
     private final OptimizationTaskRepository optimizationTaskRepo;
@@ -194,9 +196,13 @@ public class EvalService {
             return new AssessmentHistoryPage(List.of(), 0);
         }
 
+        // Batch-load all ParameterValues for all runs
+        List<UUID> runIds = runs.stream().map(ProcessRun::getRunId).toList();
+        Map<UUID, List<ParameterValue>> valuesByRun = batchLoadParameterValues(runIds);
+
         List<AssessmentHistoryItem> allItems = new ArrayList<>();
         for (ProcessRun run : runs) {
-            List<ParameterValue> values = parameterValueRepo.findByRunIdOrderByMeasuredAtAsc(run.getRunId());
+            List<ParameterValue> values = valuesByRun.getOrDefault(run.getRunId(), List.of());
             if (values.isEmpty()) {
                 // Create a placeholder item from the run itself
                 allItems.add(new AssessmentHistoryItem(
@@ -260,6 +266,10 @@ public class EvalService {
             return new JudgmentStreamData(List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
         }
 
+        // Batch-load all ParameterValues for all runs
+        List<UUID> runIds = runs.stream().map(ProcessRun::getRunId).toList();
+        Map<UUID, List<ParameterValue>> valuesByRun = batchLoadParameterValues(runIds);
+
         List<String> timeAxis = new ArrayList<>();
         List<Double> temperature = new ArrayList<>();
         List<Double> beltSpeed = new ArrayList<>();
@@ -268,7 +278,7 @@ public class EvalService {
         List<Double> current = new ArrayList<>();
 
         for (ProcessRun run : runs) {
-            List<ParameterValue> values = parameterValueRepo.findByRunIdOrderByMeasuredAtAsc(run.getRunId());
+            List<ParameterValue> values = valuesByRun.getOrDefault(run.getRunId(), List.of());
             timeAxis.add(run.getStartTime() != null ? run.getStartTime().toString() : "");
             temperature.add(extractDouble(values, 0));
             beltSpeed.add(extractDouble(values, 1));
@@ -294,9 +304,13 @@ public class EvalService {
             return new SimulationStreamData(List.of());
         }
 
+        // Batch-load all ParameterValues for all runs
+        List<UUID> runIds = runs.stream().map(ProcessRun::getRunId).toList();
+        Map<UUID, List<ParameterValue>> valuesByRun = batchLoadParameterValues(runIds);
+
         List<SimulationDataPoint> points = new ArrayList<>();
         for (ProcessRun run : runs) {
-            List<ParameterValue> values = parameterValueRepo.findByRunIdOrderByMeasuredAtAsc(run.getRunId());
+            List<ParameterValue> values = valuesByRun.getOrDefault(run.getRunId(), List.of());
             points.add(new SimulationDataPoint(
                 run.getStartTime() != null ? run.getStartTime().toString() : "",
                 extractDouble(values, 0),  // temperature
@@ -379,8 +393,8 @@ public class EvalService {
             try {
                 // Store parameter solution and objective values as JSON strings
                 // These will be persisted via the JSONB columns
-                result.setParameterSolution(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(sol.getParameters()));
-                result.setObjectiveValues(new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(sol.getObjectives()));
+                result.setParameterSolution(MAPPER.writeValueAsString(sol.getParameters()));
+                result.setObjectiveValues(MAPPER.writeValueAsString(sol.getObjectives()));
                 result.setFeasibleFlag(true);
                 result.setRecommendationLevel(i == 0 ? "RECOMMENDED" : "ALTERNATIVE");
                 optimizationResultRepo.save(result);
@@ -506,11 +520,28 @@ public class EvalService {
         return bd != null ? bd.doubleValue() : 0.0;
     }
 
+    /**
+     * Batch-load ParameterValues for multiple runs and group by runId.
+     * Replaces N individual queries with a single IN query.
+     */
+    private Map<UUID, List<ParameterValue>> batchLoadParameterValues(List<UUID> runIds) {
+        if (runIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, List<ParameterValue>> result = new LinkedHashMap<>();
+        for (UUID runId : runIds) {
+            result.put(runId, new ArrayList<>());
+        }
+        for (ParameterValue pv : parameterValueRepo.findByRunIdInOrderByMeasuredAtAsc(runIds)) {
+            result.get(pv.getRunId()).add(pv);
+        }
+        return result;
+    }
+
     private Map<String, Double> parseJsonMap(String json) {
         if (json == null || json.isBlank()) return Map.of();
         try {
-            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-            return mapper.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Double>>() {});
+            return MAPPER.readValue(json, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Double>>() {});
         } catch (Exception e) {
             return Map.of();
         }

@@ -61,20 +61,48 @@ public class ExportService {
         int page = params.page() <= 0 ? 1 : params.page();
         int pageSize = params.pageSize() <= 0 ? 10 : params.pageSize();
 
-        // Load all inspection tasks and assemble export records
+        // Load all inspection tasks
         List<InspectionTask> allTasks = inspectionTaskRepository.findAll();
 
-        // Cache lookups to avoid repeated DB hits
-        Map<UUID, ProcessRun> runCache = new HashMap<>();
-        Map<UUID, ProductionBatch> batchCache = new HashMap<>();
-        Map<UUID, Workstation> stationCache = new HashMap<>();
-        Map<UUID, DefectType> defectTypeCache = new HashMap<>();
+        // Batch-load all related entities in one pass
+        List<ProcessRun> allRuns = processRunRepository.findAll();
+        Map<UUID, ProcessRun> runMap = new HashMap<>();
+        for (ProcessRun run : allRuns) {
+            runMap.put(run.getRunId(), run);
+        }
+
+        Map<UUID, ProductionBatch> batchMap = new HashMap<>();
+        for (ProcessRun run : allRuns) {
+            if (run.getBatchId() != null) {
+                productionBatchRepository.findById(run.getBatchId())
+                    .ifPresent(b -> batchMap.put(run.getBatchId(), b));
+            }
+        }
+
+        Map<UUID, Workstation> stationMap = new HashMap<>();
+        for (ProcessRun run : allRuns) {
+            if (run.getStationId() != null) {
+                workstationRepository.findById(run.getStationId())
+                    .ifPresent(ws -> stationMap.put(run.getStationId(), ws));
+            }
+        }
+
+        // Batch-load defect records and defect types
+        List<DefectRecord> allDefects = defectRecordRepository.findByInspectionIdIn(
+                allTasks.stream().map(InspectionTask::getInspectionId).toList());
+        Map<UUID, List<DefectRecord>> defectsByInspection = new HashMap<>();
+        for (DefectRecord dr : allDefects) {
+            defectsByInspection.computeIfAbsent(dr.getInspectionId(), k -> new ArrayList<>()).add(dr);
+        }
+
+        Map<UUID, DefectType> defectTypeMap = new HashMap<>();
+        defectTypeRepository.findAll().forEach(dt -> defectTypeMap.put(dt.getDefectTypeId(), dt));
 
         List<ExportRecord> allRecords = new ArrayList<>();
 
         for (InspectionTask task : allTasks) {
-            ProcessRun run = runCache.computeIfAbsent(task.getRunId(),
-                    id -> processRunRepository.findById(id).orElse(null));
+            UUID runId = task.getRunId();
+            ProcessRun run = runMap.get(runId);
             if (run == null) {
                 continue;
             }
@@ -82,8 +110,7 @@ public class ExportService {
             // Determine batch number
             String batchNo = null;
             if (run.getBatchId() != null) {
-                ProductionBatch batch = batchCache.computeIfAbsent(run.getBatchId(),
-                        id -> productionBatchRepository.findById(id).orElse(null));
+                ProductionBatch batch = batchMap.get(run.getBatchId());
                 if (batch != null) {
                     batchNo = batch.getBatchNo();
                 }
@@ -92,17 +119,15 @@ public class ExportService {
             // Determine station name
             String stationName = null;
             if (run.getStationId() != null) {
-                Workstation ws = stationCache.computeIfAbsent(run.getStationId(),
-                        id -> workstationRepository.findById(id).orElse(null));
+                Workstation ws = stationMap.get(run.getStationId());
                 if (ws != null) {
                     stationName = ws.getStationName();
                 }
             }
 
-            // Get defect records for this inspection
-            List<DefectRecord> defects = defectRecordRepository.findByInspectionId(task.getInspectionId());
+            // Get defect records for this inspection (from pre-loaded map)
+            List<DefectRecord> defects = defectsByInspection.getOrDefault(task.getInspectionId(), List.of());
             if (defects.isEmpty()) {
-                // Still create a record even without defects
                 String defectTypeName = "N/A";
                 double confidence = task.getConfidence() != null ? task.getConfidence().doubleValue() : 0.0;
                 String status = task.getResultStatus() != null ? task.getResultStatus().toLowerCase() : "pass";
@@ -120,8 +145,7 @@ public class ExportService {
                 for (DefectRecord dr : defects) {
                     String defectTypeName = "Unknown";
                     if (dr.getDefectTypeId() != null) {
-                        DefectType dt = defectTypeCache.computeIfAbsent(dr.getDefectTypeId(),
-                                id -> defectTypeRepository.findById(id).orElse(null));
+                        DefectType dt = defectTypeMap.get(dr.getDefectTypeId());
                         if (dt != null) {
                             defectTypeName = dt.getDefectName();
                         }
@@ -180,13 +204,13 @@ public class ExportService {
         StringBuilder sb = new StringBuilder();
         sb.append("ID,Date,BatchId,Station,DefectType,Confidence,Status\n");
         for (ExportRecord r : result.list()) {
-            sb.append(r.id()).append(",")
-              .append(r.date()).append(",")
-              .append(r.batchId()).append(",")
-              .append(r.station()).append(",")
-              .append(r.defectType()).append(",")
+            sb.append(csvEscape(r.id())).append(",")
+              .append(csvEscape(r.date())).append(",")
+              .append(csvEscape(r.batchId())).append(",")
+              .append(csvEscape(r.station())).append(",")
+              .append(csvEscape(r.defectType())).append(",")
               .append(r.confidence()).append(",")
-              .append(r.status()).append("\n");
+              .append(csvEscape(r.status())).append("\n");
         }
         return sb.toString().getBytes();
     }
@@ -259,5 +283,13 @@ public class ExportService {
             return "";
         }
         return instant.atZone(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    }
+
+    private String csvEscape(String value) {
+        if (value == null) return "";
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
     }
 }

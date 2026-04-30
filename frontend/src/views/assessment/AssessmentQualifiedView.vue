@@ -208,7 +208,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import type { EChartsCoreOption } from 'echarts/core';
 import { storeToRefs } from 'pinia';
 import { Refresh } from '@element-plus/icons-vue';
@@ -463,8 +463,6 @@ onMounted(() => {
   });
 });
 
-onBeforeUnmount(() => {
-});
 </script>
 
 <style scoped>

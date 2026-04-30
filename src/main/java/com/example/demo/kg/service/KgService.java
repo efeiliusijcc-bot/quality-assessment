@@ -550,27 +550,11 @@ public class KgService {
         }
     }
 
-    /**
-     * GraphVersion has no description getter - access via reflection or field.
-     * Since the entity doesn't expose description, we store/retrieve it carefully.
-     */
     private String getDescription(GraphVersion gv) {
-        try {
-            var field = GraphVersion.class.getDeclaredField("description");
-            field.setAccessible(true);
-            return (String) field.get(gv);
-        } catch (Exception e) {
-            return null;
-        }
+        return gv.getDescription();
     }
 
     private void setDescription(GraphVersion gv, String description) {
-        try {
-            var field = GraphVersion.class.getDeclaredField("description");
-            field.setAccessible(true);
-            field.set(gv, description);
-        } catch (Exception e) {
-            log.warn("Failed to set description on GraphVersion: {}", e.getMessage());
-        }
+        gv.setDescription(description);
     }
 }

@@ -1,5 +1,7 @@
 package com.example.demo.config;
 
+import org.springframework.beans.factory.annotation.Value;
+
 import com.example.demo.security.JwtAuthenticationFilter;
 import com.example.demo.security.JwtProperties;
 import com.example.demo.security.RestAccessDeniedHandler;
@@ -30,6 +32,9 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
     private final RestAccessDeniedHandler restAccessDeniedHandler;
+
+    @Value("${app.security.cors.allowed-origins:http://localhost:5173}")
+    private String allowedOrigins;
 
     public SecurityConfig(
         JwtAuthenticationFilter jwtAuthenticationFilter,
@@ -81,7 +86,8 @@ public class SecurityConfig {
     @Bean
     CorsConfigurationSource corsConfigurationSource(org.springframework.core.env.Environment environment) {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*"));
+        String[] origins = allowedOrigins.split(",");
+        configuration.setAllowedOriginPatterns(List.of(origins));
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("*"));
         configuration.setExposedHeaders(List.of("*"));

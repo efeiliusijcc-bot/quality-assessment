@@ -144,12 +144,7 @@ import { useAssessmentStore } from '@/stores/assessment';
 const assessmentStore = useAssessmentStore();
 const { globalFilters, lastAssessmentAt } = storeToRefs(assessmentStore);
 
-const stationOptions = [
-  'Assembly Station 07',
-  'Mounting Station A1',
-  'Soldering Station B2',
-  'Inspection Station C3',
-];
+const stationOptions = computed(() => assessmentStore.availableStations);
 
 const loading = ref(false);
 const currentPage = ref(1);
@@ -273,6 +268,7 @@ const showDetails = (row: ExportRecord) => {
 };
 
 onMounted(() => {
+  assessmentStore.loadStations();
   void loadTableData();
 });
 </script>

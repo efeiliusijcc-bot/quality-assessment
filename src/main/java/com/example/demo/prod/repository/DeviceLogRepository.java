@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface DeviceLogRepository extends JpaRepository<DeviceLog, UUID> {
     List<DeviceLog> findByEquipmentIdOrderByLogTimeDesc(UUID equipmentId);
+    List<DeviceLog> findByRunId(UUID runId);
 }

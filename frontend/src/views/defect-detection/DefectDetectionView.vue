@@ -387,10 +387,10 @@ const submitBatchDetect = async () => {
 
   batchDetecting.value = true;
   try {
-    const items = batchFiles.value.map((file, index) => ({
+    const items = batchFiles.value.map((file) => ({
       name: file.name,
       batchNo: `BATCH-${Date.now()}`,
-      imageUrl: URL.createObjectURL(file),
+      imageUrl: file.name,
     }));
 
     const result = await batchDetectDefects(items);

@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -58,6 +59,15 @@ public class CaptchaService {
         return "data:image/svg+xml;base64," + encoded;
     }
 
+    @Scheduled(fixedRate = 300_000) // every 5 minutes
+    public void cleanupExpiredCaptchas() {
+        Instant now = Instant.now();
+        captchaStore.entrySet().removeIf(entry -> entry.getValue().isExpired(now));
+    }
+
     private record CaptchaEntry(String code, Instant expiresAt) {
+        boolean isExpired(Instant now) {
+            return expiresAt.isBefore(now);
+        }
     }
 }

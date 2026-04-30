@@ -39,5 +39,7 @@ public class GraphVersion {
     public UUID getGraphVersionId() { return graphVersionId; }
     public String getGraphName() { return graphName; }
     public String getVersionNo() { return versionNo; }
+    public String getDescription() { return description; }
+    public void setDescription(String description) { this.description = description; }
     public Instant getCreatedAt() { return createdAt; }
 }

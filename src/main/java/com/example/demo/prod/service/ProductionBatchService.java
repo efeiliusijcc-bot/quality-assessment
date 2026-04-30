@@ -46,8 +46,7 @@ public class ProductionBatchService {
     }
 
     public List<BatchResponse> listBatchesByProductType(UUID productTypeId) {
-        return batchRepository.findAll().stream()
-            .filter(b -> productTypeId.equals(b.getProductTypeId()))
+        return batchRepository.findByProductTypeId(productTypeId).stream()
             .map(this::toResponse)
             .toList();
     }

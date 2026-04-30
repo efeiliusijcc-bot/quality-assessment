@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface CleaningRuleRepository extends JpaRepository<CleaningRule, UUID> {
     List<CleaningRule> findByEnabledFlagTrueOrderByPriorityNoAsc();
+    List<CleaningRule> findByTargetCategory(String targetCategory);
 }

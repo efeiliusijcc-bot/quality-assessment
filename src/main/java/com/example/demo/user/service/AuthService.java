@@ -49,6 +49,8 @@ public class AuthService {
     }
 
     public boolean logout() {
+        // Note: JWT is stateless. Logout only removes client-side token.
+        // For production, implement a token blacklist with Redis or DB.
         return true;
     }
 }

@@ -82,8 +82,8 @@ const userStore = useUserStore();
 const formRef = ref<FormInstance>();
 
 const form = reactive({
-  username: 'admin',
-  password: '123456',
+  username: '',
+  password: '',
   captcha: '',
 });
 

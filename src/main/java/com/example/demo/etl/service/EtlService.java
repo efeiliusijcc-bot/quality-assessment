@@ -123,8 +123,7 @@ public class EtlService {
 
     @Transactional(readOnly = true)
     public List<CleaningRuleResponse> listCleaningRulesByTargetCategory(String targetCategory) {
-        return cleaningRuleRepository.findAll().stream()
-                .filter(r -> targetCategory.equals(r.getTargetCategory()))
+        return cleaningRuleRepository.findByTargetCategory(targetCategory).stream()
                 .map(this::toCleaningRuleResponse).toList();
     }
 
@@ -138,16 +137,17 @@ public class EtlService {
 
     @Transactional(readOnly = true)
     public List<CleaningLogResponse> listCleaningLogsByRuleId(UUID ruleId) {
-        return cleaningLogRepository.findAll().stream()
-                .filter(l -> ruleId.equals(l.getRuleId()))
+        return cleaningLogRepository.findByRuleId(ruleId).stream()
                 .map(this::toCleaningLogResponse).toList();
     }
 
     @Transactional(readOnly = true)
     public List<CleaningLogResponse> listCleaningLogsBySource(String sourceTable, UUID sourceId) {
-        return cleaningLogRepository.findAll().stream()
-                .filter(l -> (sourceTable == null || sourceTable.equals(l.getSourceTable()))
-                        && (sourceId == null || sourceId.equals(l.getSourceId())))
+        List<CleaningLog> logs = sourceTable != null
+                ? cleaningLogRepository.findBySourceTable(sourceTable)
+                : cleaningLogRepository.findAll();
+        return logs.stream()
+                .filter(l -> sourceId == null || sourceId.equals(l.getSourceId()))
                 .map(this::toCleaningLogResponse).toList();
     }
 

@@ -133,6 +133,12 @@ router.beforeEach((to) => {
     return '/upload';
   }
 
+  // token 存在但 profile 为空，清除 token 重新登录
+  if (token && !role) {
+    userStore.clearAuth();
+    return { path: '/login', query: { redirect: to.fullPath } };
+  }
+
   const requiredRoles = to.meta.roles;
   if (requiredRoles?.length && (!role || !requiredRoles.includes(role))) {
     return '/403';

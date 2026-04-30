@@ -167,20 +167,17 @@ public class QcService {
             return List.of();
         }
 
-        // Collect all inspection IDs and fetch related defect records
-        List<UUID> inspectionIds = inspections.stream()
-                .map(InspectionTask::getInspectionId).toList();
-        List<DefectRecord> allRecords = inspectionIds.stream()
-                .map(defectRecordRepository::findByInspectionId)
-                .flatMap(List::stream).toList();
-
         // Fetch all defect types for lookup
         Map<UUID, DefectType> defectTypeMap = defectTypeRepository.findAll().stream()
                 .collect(Collectors.toMap(DefectType::getDefectTypeId, dt -> dt));
 
-        // Group records by inspectionId
-        Map<UUID, List<DefectRecord>> recordsByInspection = allRecords.stream()
-                .collect(Collectors.groupingBy(DefectRecord::getInspectionId));
+        // Batch-load all defect records by inspection IDs
+        List<UUID> inspectionIds = inspections.stream()
+                .map(InspectionTask::getInspectionId).toList();
+        Map<UUID, List<DefectRecord>> recordsByInspection = new java.util.LinkedHashMap<>();
+        for (DefectRecord dr : defectRecordRepository.findByInspectionIdIn(inspectionIds)) {
+            recordsByInspection.computeIfAbsent(dr.getInspectionId(), k -> new java.util.ArrayList<>()).add(dr);
+        }
 
         List<DefectSampleResponse> samples = new ArrayList<>();
         for (InspectionTask inspection : inspections) {

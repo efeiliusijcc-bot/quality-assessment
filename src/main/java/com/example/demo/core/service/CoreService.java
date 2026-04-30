@@ -5,7 +5,9 @@ import com.example.demo.core.domain.*;
 import com.example.demo.core.dto.CoreDtos.*;
 import com.example.demo.core.repository.*;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -82,11 +84,15 @@ public class CoreService {
     }
 
     public List<WorkstationResponse> listWorkstations() {
-        return workstationRepository.findAll().stream().map(this::toWorkstationResponse).toList();
+        List<Workstation> workstations = workstationRepository.findAll();
+        Map<UUID, ProcessStep> stepMap = batchLoadProcessSteps(workstations);
+        return workstations.stream().map(w -> toWorkstationResponse(w, stepMap)).toList();
     }
 
     public List<WorkstationResponse> listWorkstationsByStep(UUID stepId) {
-        return workstationRepository.findByStepId(stepId).stream().map(this::toWorkstationResponse).toList();
+        List<Workstation> workstations = workstationRepository.findByStepId(stepId);
+        Map<UUID, ProcessStep> stepMap = batchLoadProcessSteps(workstations);
+        return workstations.stream().map(w -> toWorkstationResponse(w, stepMap)).toList();
     }
 
     private Workstation requireWorkstation(UUID id) {
@@ -101,6 +107,24 @@ public class CoreService {
             e.getStationId(), e.getStepId(), stepCode,
             e.getStationCode(), e.getStationName(), e.getLocation(), e.getStatus()
         );
+    }
+
+    private WorkstationResponse toWorkstationResponse(Workstation e, Map<UUID, ProcessStep> stepMap) {
+        ProcessStep step = stepMap.get(e.getStepId());
+        String stepCode = step != null ? step.getStepCode() : null;
+        return new WorkstationResponse(
+            e.getStationId(), e.getStepId(), stepCode,
+            e.getStationCode(), e.getStationName(), e.getLocation(), e.getStatus()
+        );
+    }
+
+    private Map<UUID, ProcessStep> batchLoadProcessSteps(List<Workstation> workstations) {
+        List<UUID> stepIds = workstations.stream()
+            .map(Workstation::getStepId)
+            .distinct()
+            .toList();
+        return processStepRepository.findAllById(stepIds).stream()
+            .collect(Collectors.toMap(ProcessStep::getStepId, s -> s));
     }
 
     // ==================== Equipment ====================

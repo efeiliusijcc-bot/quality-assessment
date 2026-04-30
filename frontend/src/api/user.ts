@@ -47,12 +47,16 @@ export const loginByPassword = async (payload: LoginPayload): Promise<LoginResul
     data: payload,
   });
 
+  const roleLower = res.user.role.toLowerCase();
+  const validRoles = ['admin', 'engineer', 'operator'] as const;
+  const role = validRoles.includes(roleLower as any) ? roleLower : 'operator';
+
   const result: LoginResult = {
     token: res.token,
     user: {
       id: res.user.id,
       name: res.user.name,
-      role: res.user.role.toLowerCase() as UserProfile['role'],
+      role: role as UserProfile['role'],
     },
   };
 
