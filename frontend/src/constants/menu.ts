@@ -31,6 +31,11 @@ export const menus: MenuItem[] = [
     ],
   },
   {
+    path: '/knowledge-graph',
+    title: '知识图谱可视化',
+    icon: 'Connection',
+  },
+  {
     path: '/export',
     title: '结果筛选与资源导出',
     icon: 'DocumentCopy',

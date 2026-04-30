@@ -95,6 +95,16 @@ const routes: RouteRecordRaw[] = [
         ],
       },
       {
+        path: 'knowledge-graph',
+        name: 'knowledge-graph',
+        component: () => import('@/views/graph/KnowledgeGraphView.vue'),
+        meta: {
+          title: '知识图谱可视化',
+          icon: 'Connection',
+          roles: ['admin', 'engineer'],
+        },
+      },
+      {
         path: 'export',
         name: 'export',
         component: () => import('@/views/export/ExportView.vue'),
