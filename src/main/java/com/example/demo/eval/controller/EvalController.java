@@ -18,32 +18,37 @@ public class EvalController {
         this.evalService = evalService;
     }
 
+    private UUID parseBatchId(String batchId) {
+        if (batchId == null || batchId.isBlank()) return null;
+        try { return UUID.fromString(batchId); } catch (IllegalArgumentException e) { return null; }
+    }
+
     // ──────────────────── Assessment Dashboard ────────────────────
 
     @GetMapping("/assessment/qualified")
     public ApiResponse<QualifiedDashboardData> getQualifiedDashboard(
-            @RequestParam(required = false) UUID batchId) {
-        return ApiResponse.success(evalService.getQualifiedDashboard(batchId));
+            @RequestParam(required = false) String batchId) {
+        return ApiResponse.success(evalService.getQualifiedDashboard(parseBatchId(batchId)));
     }
 
     @GetMapping("/assessment/judgment")
     public ApiResponse<JudgmentDashboardData> getJudgmentDashboard(
-            @RequestParam(required = false) UUID batchId) {
-        return ApiResponse.success(evalService.getJudgmentDashboard(batchId));
+            @RequestParam(required = false) String batchId) {
+        return ApiResponse.success(evalService.getJudgmentDashboard(parseBatchId(batchId)));
     }
 
     @GetMapping("/assessment/prediction")
     public ApiResponse<PredictionDashboardData> getPredictionDashboard(
-            @RequestParam(required = false) UUID batchId) {
-        return ApiResponse.success(evalService.getPredictionDashboard(batchId));
+            @RequestParam(required = false) String batchId) {
+        return ApiResponse.success(evalService.getPredictionDashboard(parseBatchId(batchId)));
     }
 
     @GetMapping("/assessment/history")
     public ApiResponse<AssessmentHistoryPage> getHistory(
-            @RequestParam(required = false) UUID batchId,
+            @RequestParam(required = false) String batchId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int size) {
-        return ApiResponse.success(evalService.getAssessmentHistory(batchId, page, size));
+        return ApiResponse.success(evalService.getAssessmentHistory(parseBatchId(batchId), page, size));
     }
 
     @GetMapping("/assessment/stations")
@@ -60,14 +65,14 @@ public class EvalController {
 
     @GetMapping("/assessment/judgment/stream")
     public ApiResponse<JudgmentStreamData> getJudgmentStream(
-            @RequestParam(required = false) UUID batchId) {
-        return ApiResponse.success(evalService.getJudgmentStream(batchId));
+            @RequestParam(required = false) String batchId) {
+        return ApiResponse.success(evalService.getJudgmentStream(parseBatchId(batchId)));
     }
 
     @GetMapping("/assessment/prediction/simulation")
     public ApiResponse<SimulationStreamData> getSimulationStream(
-            @RequestParam(required = false) UUID batchId) {
-        return ApiResponse.success(evalService.getSimulationStream(batchId));
+            @RequestParam(required = false) String batchId) {
+        return ApiResponse.success(evalService.getSimulationStream(parseBatchId(batchId)));
     }
 
     // ──────────────────── AssessmentTask CRUD ────────────────────
