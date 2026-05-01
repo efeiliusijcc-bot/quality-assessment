@@ -22,14 +22,25 @@ import com.example.demo.qc.domain.DefectRecord;
 import com.example.demo.qc.domain.DefectType;
 import com.example.demo.qc.repository.DefectRecordRepository;
 import com.example.demo.qc.repository.DefectTypeRepository;
+import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.data.domain.Sort;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.InputStream;
 import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 
 @Service
@@ -46,6 +57,7 @@ public class EtlService {
     private final ParameterValueRepository parameterValueRepository;
     private final DefectTypeRepository defectTypeRepository;
     private final DefectRecordRepository defectRecordRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public EtlService(
             ImportJobRepository importJobRepository,
@@ -57,7 +69,8 @@ public class EtlService {
             ParameterDefRepository parameterDefRepository,
             ParameterValueRepository parameterValueRepository,
             DefectTypeRepository defectTypeRepository,
-            DefectRecordRepository defectRecordRepository) {
+            DefectRecordRepository defectRecordRepository,
+            JdbcTemplate jdbcTemplate) {
         this.importJobRepository = importJobRepository;
         this.cleaningRuleRepository = cleaningRuleRepository;
         this.cleaningLogRepository = cleaningLogRepository;
@@ -68,6 +81,7 @@ public class EtlService {
         this.parameterValueRepository = parameterValueRepository;
         this.defectTypeRepository = defectTypeRepository;
         this.defectRecordRepository = defectRecordRepository;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     // ===== ImportJob CRUD =====
@@ -223,18 +237,415 @@ public class EtlService {
         );
     }
 
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public ManufacturingImportSummary importManufacturingData(MultipartFile file) {
         String fileName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "unknown";
         ImportJob job = new ImportJob("EXCEL", fileName);
         job.setTargetTable("manufacturing_data");
-        job.setImportStatus("COMPLETED");
-        job.setTotalRows(100);
-        job.setSuccessRows(95);
-        job.setErrorRows(5);
+        job.setImportStatus("RUNNING");
+        importJobRepository.save(job);
+
+        int processSettingCount = 0;
+        int equipmentOperationCount = 0;
+        int qualityDefectCount = 0;
+        int coreDataCount = 0;
+        int evalDataCount = 0;
+        int kgDataCount = 0;
+        int totalRows = 0;
+        int errorRows = 0;
+        List<String> errorMessages = new ArrayList<>();
+
+        try (InputStream is = file.getInputStream(); Workbook wb = new XSSFWorkbook(is)) {
+            for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+                Sheet sheet = wb.getSheetAt(i);
+                String sheetName = sheet.getSheetName().toLowerCase();
+                if (sheet.getPhysicalNumberOfRows() <= 1) continue;
+
+                // Read header
+                Row headerRow = sheet.getRow(0);
+                if (headerRow == null) continue;
+                List<String> headers = new ArrayList<>();
+                for (Cell c : headerRow) {
+                    headers.add(getCellStringValue(c).toLowerCase().replace("_", ""));
+                }
+
+                for (int r = 1; r <= sheet.getLastRowNum(); r++) {
+                    Row row = sheet.getRow(r);
+                    if (row == null) continue;
+                    totalRows++;
+                    try {
+                        Map<String, String> cells = new LinkedHashMap<>();
+                        for (int ci = 0; ci < headers.size(); ci++) {
+                            cells.put(headers.get(ci), ci < row.getLastCellNum() ? getCellStringValue(row.getCell(ci)) : "");
+                        }
+
+                        switch (sheetName) {
+                            case "production_batch": {
+                                UUID productTypeId = parseUUID(cells.get("producttypeid"));
+                                if (productTypeId == null) productTypeId = UUID.fromString("00000000-0000-0000-0000-000000000001");
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO prod.production_batch (batch_id, batch_no, product_type_id, plan_qty, actual_qty, start_time, end_time, batch_status, created_at, metadata) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)",
+                                    parseUUID(cells.get("batchid")), cells.get("batchno"), productTypeId,
+                                    parseInt(cells.get("planqty")), parseInt(cells.get("actualqty")),
+                                    parseTimestamp(cells.get("starttime")), parseTimestamp(cells.get("endtime")),
+                                    coalesce(cells.get("batchstatus"), "CREATED"), parseTimestampOrNow(cells.get("createdat")), "{}");
+                                processSettingCount++;
+                                break;
+                            }
+                            case "product_unit": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO prod.product_unit (unit_id, batch_id, serial_no, current_step_id, unit_status, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("unitid")), parseUUID(cells.get("batchid")),
+                                    cells.get("serialno"), parseUUID(cells.get("currentstepid")),
+                                    coalesce(cells.get("unitstatus"), "CREATED"), parseTimestampOrNow(cells.get("createdat")));
+                                processSettingCount++;
+                                break;
+                            }
+                            case "process_run": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO prod.process_run (run_id, batch_id, unit_id, step_id, station_id, equipment_id, recipe_id, operator_id, run_no, start_time, end_time, run_status, created_at, context_json) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)",
+                                    parseUUID(cells.get("runid")), parseUUID(cells.get("batchid")), parseUUID(cells.get("unitid")),
+                                    parseUUID(cells.get("stepid")), parseUUID(cells.get("stationid")), parseUUID(cells.get("equipmentid")),
+                                    parseUUID(cells.get("recipeid")), parseUUID(cells.get("operatorid")), cells.get("runno"),
+                                    parseTimestamp(cells.get("starttime")), parseTimestamp(cells.get("endtime")),
+                                    coalesce(cells.get("runstatus"), "RUNNING"), parseTimestampOrNow(cells.get("createdat")), "{}");
+                                equipmentOperationCount++;
+                                break;
+                            }
+                            case "parameter_value": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO prod.parameter_value (value_id, run_id, param_id, measured_at, value_num, quality_flag, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("valueid")), parseUUID(cells.get("runid")), parseUUID(cells.get("paramid")),
+                                    parseTimestampOrNow(cells.get("measuredat")), parseBigDecimal(cells.get("valuenum")),
+                                    coalesce(cells.get("qualityflag"), "RAW"), parseTimestampOrNow(cells.get("createdat")));
+                                equipmentOperationCount++;
+                                break;
+                            }
+                            case "defect_type": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO qc.defect_type (defect_type_id, step_id, defect_code, defect_name, defect_category, default_severity, description, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("defecttypeid")), parseUUID(cells.get("stepid")),
+                                    cells.get("defectcode"), cells.get("defectname"), cells.get("defectcategory"),
+                                    parseInt(cells.get("defaultseverity")), cells.get("description"), parseTimestampOrNow(cells.get("createdat")));
+                                qualityDefectCount++;
+                                break;
+                            }
+                            case "inspection_task": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO qc.inspection_task (inspection_id, run_id, unit_id, step_id, inspection_type, model_name, model_version, result_status, confidence, inspected_at, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("inspectionid")), parseUUID(cells.get("runid")), parseUUID(cells.get("unitid")),
+                                    parseUUID(cells.get("stepid")), cells.get("inspectiontype"), cells.get("modelname"),
+                                    cells.get("modelversion"), cells.get("resultstatus"), parseBigDecimal(cells.get("confidence")),
+                                    parseTimestampOrNow(cells.get("inspectedat")), parseTimestampOrNow(cells.get("createdat")));
+                                qualityDefectCount++;
+                                break;
+                            }
+                            case "defect_record": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO qc.defect_record (defect_id, inspection_id, unit_id, defect_type_id, defect_count, confidence, severity_level, is_critical, created_at, bbox_json) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)",
+                                    parseUUID(cells.get("defectid")), parseUUID(cells.get("inspectionid")), parseUUID(cells.get("unitid")),
+                                    parseUUID(cells.get("defecttypeid")), parseInt(cells.get("defectcount")),
+                                    parseBigDecimal(cells.get("confidence")), parseInt(cells.get("severitylevel")),
+                                    parseBoolean(cells.get("iscritical")), parseTimestampOrNow(cells.get("createdat")), "[]");
+                                qualityDefectCount++;
+                                break;
+                            }
+                            case "quality_measurement": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO qc.quality_measurement (measurement_id, run_id, unit_id, metric_id, measured_at, value_num, is_pass, deviation_value, measurement_method, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("measurementid")), parseUUID(cells.get("runid")), parseUUID(cells.get("unitid")),
+                                    parseUUID(cells.get("metricid")), parseTimestampOrNow(cells.get("measuredat")),
+                                    parseBigDecimal(cells.get("valuenum")), parseBoolean(cells.get("ispass")),
+                                    parseBigDecimal(cells.get("deviationvalue")), coalesce(cells.get("measurementmethod"), "自动检测"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                qualityDefectCount++;
+                                break;
+                            }
+                            // ===== core_data sheets =====
+                            case "process_step": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO core.process_step (step_id, step_code, step_name, step_order, is_inspection, description, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("stepid")), cells.get("stepcode"), cells.get("stepname"),
+                                    parseInt(cells.get("steporder")), parseBoolean(cells.get("isinspection")),
+                                    cells.get("description"), parseTimestampOrNow(cells.get("createdat")));
+                                coreDataCount++;
+                                break;
+                            }
+                            case "workstation": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO core.workstation (station_id, step_id, station_code, station_name, location, status, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("stationid")), parseUUID(cells.get("stepid")),
+                                    cells.get("stationcode"), cells.get("stationname"),
+                                    cells.get("location"), coalesce(cells.get("status"), "ACTIVE"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                coreDataCount++;
+                                break;
+                            }
+                            case "equipment": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO core.equipment (equipment_id, station_id, equipment_code, equipment_name, equipment_type, manufacturer, model_no, status, installed_at, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("equipmentid")), parseUUID(cells.get("stationid")),
+                                    cells.get("equipmentcode"), cells.get("equipmentname"),
+                                    cells.get("equipmenttype"), cells.get("manufacturer"),
+                                    cells.get("modelno"), coalesce(cells.get("status"), "ACTIVE"),
+                                    parseLocalDate(cells.get("installedat")), parseTimestampOrNow(cells.get("createdat")));
+                                coreDataCount++;
+                                break;
+                            }
+                            case "product_type": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO core.product_type (product_type_id, product_code, product_name, material_system, specification, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("producttypeid")), cells.get("productcode"),
+                                    cells.get("productname"), coalesce(cells.get("materialsystem"), "HTCC"),
+                                    cells.get("specification"), parseTimestampOrNow(cells.get("createdat")));
+                                coreDataCount++;
+                                break;
+                            }
+                            case "parameter_def": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO core.parameter_def (param_id, step_id, param_code, param_name, param_category, data_type, unit, lower_limit, upper_limit, standard_value, required_flag, description, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("paramid")), parseUUID(cells.get("stepid")),
+                                    cells.get("paramcode"), cells.get("paramname"),
+                                    cells.get("paramcategory"), cells.get("datatype"),
+                                    cells.get("unit"), parseBigDecimal(cells.get("lowerlimit")),
+                                    parseBigDecimal(cells.get("upperlimit")), parseBigDecimal(cells.get("standardvalue")),
+                                    parseBoolean(cells.get("requiredflag")), cells.get("description"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                coreDataCount++;
+                                break;
+                            }
+                            // ===== eval_data sheets =====
+                            case "assessment_task": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO eval.assessment_task (task_id, task_type, batch_id, step_id, model_name, model_version, task_status, created_at, finished_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("taskid")), cells.get("tasktype"),
+                                    parseUUID(cells.get("batchid")), parseUUID(cells.get("stepid")),
+                                    cells.get("modelname"), cells.get("modelversion"),
+                                    coalesce(cells.get("taskstatus"), "CREATED"),
+                                    parseTimestampOrNow(cells.get("createdat")),
+                                    parseTimestamp(cells.get("finishedat")));
+                                evalDataCount++;
+                                break;
+                            }
+                            case "assessment_result": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO eval.assessment_result (result_id, task_id, assessment_score, pass_probability, is_pass, risk_level, conclusion, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("resultid")), parseUUID(cells.get("taskid")),
+                                    parseBigDecimal(cells.get("assessmentscore")),
+                                    parseBigDecimal(cells.get("passprobability")),
+                                    parseBoolean(cells.get("ispass")),
+                                    cells.get("risklevel"), cells.get("conclusion"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                evalDataCount++;
+                                break;
+                            }
+                            // ===== kg_data sheets =====
+                            case "graph_version": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO kg.graph_version (graph_version_id, graph_name, version_no, description, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("graphversionid")), cells.get("graphname"),
+                                    cells.get("versionno"), cells.get("description"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                kgDataCount++;
+                                break;
+                            }
+                            case "kg_entity": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO kg.kg_entity (entity_id, graph_version_id, entity_type, ref_schema, ref_table, ref_id, entity_code, entity_name, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("entityid")), parseUUID(cells.get("graphversionid")),
+                                    cells.get("entitytype"), cells.get("refschema"),
+                                    cells.get("reftable"), parseUUID(cells.get("refid")),
+                                    cells.get("entitycode"), cells.get("entityname"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                kgDataCount++;
+                                break;
+                            }
+                            case "kg_relation": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO kg.kg_relation (relation_id, graph_version_id, source_entity_id, target_entity_id, relation_type, relation_weight, confidence, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("relationid")), parseUUID(cells.get("graphversionid")),
+                                    parseUUID(cells.get("sourceentityid")), parseUUID(cells.get("targetentityid")),
+                                    cells.get("relationtype"), parseBigDecimal(cells.get("relationweight")),
+                                    parseBigDecimal(cells.get("confidence")),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                kgDataCount++;
+                                break;
+                            }
+                            default: break;
+                        }
+                    } catch (Exception rowEx) {
+                        errorRows++;
+                        errorMessages.add("Sheet '" + sheetName + "' row " + r + ": " + rowEx.getMessage());
+                    }
+                }
+            }
+        } catch (Exception e) {
+            String errorMsg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            job.setImportStatus("FAILED");
+            job.setErrorLog("[\"" + errorMsg.replace("\"", "'") + "\"]");
+            job.setErrorRows(errorRows);
+            job.setTotalRows(totalRows);
+            job.setFinishedAt(Instant.now());
+            try { importJobRepository.save(job); } catch (Exception ignored) {}
+            throw new BusinessException(500, "Excel import failed: " + errorMsg);
+        }
+
+        job.setImportStatus(errorRows > 0 ? "COMPLETED_WITH_ERRORS" : "COMPLETED");
+        job.setTotalRows(totalRows);
+        job.setSuccessRows(totalRows - errorRows);
+        job.setErrorRows(errorRows);
+        if (!errorMessages.isEmpty()) {
+            job.setErrorLog(toJsonArray(errorMessages));
+        }
         job.setFinishedAt(Instant.now());
         importJobRepository.save(job);
 
-        return new ManufacturingImportSummary(fileName, 30, 40, 25);
+        return new ManufacturingImportSummary(fileName, processSettingCount, equipmentOperationCount, qualityDefectCount, coreDataCount, evalDataCount, kgDataCount);
+    }
+
+    // ===== Excel Helper Methods =====
+
+    private String getCellStringValue(Cell cell) {
+        if (cell == null) return "";
+        switch (cell.getCellType()) {
+            case STRING: return cell.getStringCellValue().trim();
+            case NUMERIC: {
+                // Check if it's a date cell first
+                if (DateUtil.isCellDateFormatted(cell)) {
+                    return cell.getLocalDateTimeCellValue().toString();
+                }
+                double v = cell.getNumericCellValue();
+                if (v == Math.floor(v) && !Double.isInfinite(v)) return String.valueOf((long) v);
+                return String.valueOf(v);
+            }
+            case BOOLEAN: return String.valueOf(cell.getBooleanCellValue());
+            case FORMULA: {
+                try { return cell.getStringCellValue().trim(); }
+                catch (Exception e) { return String.valueOf(cell.getNumericCellValue()); }
+            }
+            default: return "";
+        }
+    }
+
+    private String coalesce(String val, String defaultVal) {
+        return (val != null && !val.isBlank()) ? val : defaultVal;
+    }
+
+    private UUID parseUUID(String val) {
+        if (val == null || val.isBlank()) return null;
+        try { return UUID.fromString(val); }
+        catch (Exception e) { return null; }
+    }
+
+    private Integer parseInt(String val) {
+        if (val == null || val.isBlank()) return null;
+        try { return Integer.parseInt(val); }
+        catch (Exception e) { return null; }
+    }
+
+    private BigDecimal parseBigDecimal(String val) {
+        if (val == null || val.isBlank()) return null;
+        try { return new BigDecimal(val); }
+        catch (Exception e) { return null; }
+    }
+
+    private Boolean parseBoolean(String val) {
+        if (val == null || val.isBlank()) return null;
+        return "true".equalsIgnoreCase(val) || "1".equals(val);
+    }
+
+    private Timestamp parseTimestampOrNow(String val) {
+        Timestamp ts = parseTimestamp(val);
+        return ts != null ? ts : Timestamp.from(Instant.now());
+    }
+
+    private int insertIgnoreDuplicate(String sql, Object... args) {
+        try {
+            return jdbcTemplate.update(sql, args);
+        } catch (DataIntegrityViolationException e) {
+            return 0; // duplicate or FK violation, ignore
+        }
+    }
+
+    private java.time.LocalDate parseLocalDate(String val) {
+        if (val == null || val.isBlank()) return null;
+        val = val.trim();
+        try { return java.time.LocalDate.parse(val); } catch (Exception e1) {
+            try { return java.time.LocalDate.parse(val, java.time.format.DateTimeFormatter.ofPattern("yyyy/MM/dd")); } catch (Exception e2) {
+                return null;
+            }
+        }
+    }
+
+    private String toJsonArray(List<String> items) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < items.size(); i++) {
+            if (i > 0) sb.append(",");
+            String escaped = items.get(i)
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .replace("\t", " ");
+            sb.append("\"").append(escaped).append("\"");
+        }
+        return sb.append("]").toString();
+    }
+
+    private Timestamp parseTimestamp(String val) {
+        if (val == null || val.isBlank()) return null;
+        val = val.trim();
+
+        // 1. Try ISO Instant format (e.g. 2024-01-01T10:30:00Z)
+        try {
+            Instant instant = Instant.parse(val);
+            return Timestamp.from(instant);
+        } catch (DateTimeParseException ignored) {}
+
+        // 2. Try datetime patterns
+        String[] dateTimePatterns = {
+            "yyyy-MM-dd'T'HH:mm:ss",
+            "yyyy-MM-dd HH:mm:ss",
+            "yyyy/MM/dd HH:mm:ss"
+        };
+        for (String pattern : dateTimePatterns) {
+            try {
+                LocalDateTime ldt = LocalDateTime.parse(val, DateTimeFormatter.ofPattern(pattern));
+                return Timestamp.from(ldt.toInstant(ZoneOffset.UTC));
+            } catch (DateTimeParseException ignored) {}
+        }
+
+        // 3. Try date-only patterns (use start of day UTC)
+        String[] datePatterns = {
+            "yyyy-MM-dd",
+            "yyyy/MM/dd"
+        };
+        for (String pattern : datePatterns) {
+            try {
+                LocalDate ld = LocalDate.parse(val, DateTimeFormatter.ofPattern(pattern));
+                return Timestamp.from(ld.atStartOfDay(ZoneOffset.UTC).toInstant());
+            } catch (DateTimeParseException ignored) {}
+        }
+
+        return null;
     }
 
     @Transactional(readOnly = true)

@@ -24,11 +24,15 @@ export interface GatOptimizationResponse {
   summary: string;
 }
 
-export const runGatOptimization = (batchId: string): Promise<GatOptimizationResponse> =>
-  request<GatOptimizationResponse>({
+export const runGatOptimization = (batchId: string): Promise<GatOptimizationResponse> => {
+  if (!batchId) {
+    return Promise.reject(new Error('batchId is required'));
+  }
+  return request<GatOptimizationResponse>({
     url: `/graph/gat/optimize/${batchId}`,
     method: 'POST',
   });
+};
 
 export interface GraphVisualizationNode {
   graphId: string;
@@ -49,8 +53,12 @@ export interface GraphVisualizationResponse {
   edges: GraphVisualizationEdge[];
 }
 
-export const fetchGraphVisualization = async (batchId: string): Promise<GraphVisualizationResponse> =>
-  request<GraphVisualizationResponse>({
+export const fetchGraphVisualization = async (batchId: string): Promise<GraphVisualizationResponse> => {
+  if (!batchId) {
+    return { nodes: [], edges: [] };
+  }
+  return request<GraphVisualizationResponse>({
     url: `/graph/visualization/${batchId}`,
     method: 'GET',
   });
+};

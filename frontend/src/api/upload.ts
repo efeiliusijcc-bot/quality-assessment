@@ -17,6 +17,9 @@ export interface ManufacturingImportSummary {
   processSettingCount: number;
   equipmentOperationCount: number;
   qualityDefectCount: number;
+  coreDataCount: number;
+  evalDataCount: number;
+  kgDataCount: number;
 }
 
 export interface ManualRecordPayload {

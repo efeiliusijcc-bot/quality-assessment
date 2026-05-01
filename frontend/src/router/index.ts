@@ -105,6 +105,26 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'graph-sync',
+        name: 'graph-sync',
+        component: () => import('@/views/graph/SyncView.vue'),
+        meta: {
+          title: '知识图谱同步',
+          icon: 'Refresh',
+          roles: ['admin', 'engineer'],
+        },
+      },
+      {
+        path: 'import-history',
+        name: 'import-history',
+        component: () => import('@/views/upload/ImportHistoryView.vue'),
+        meta: {
+          title: '导入历史记录',
+          icon: 'Clock',
+          roles: ['admin', 'engineer', 'operator'],
+        },
+      },
+      {
         path: 'export',
         name: 'export',
         component: () => import('@/views/export/ExportView.vue'),

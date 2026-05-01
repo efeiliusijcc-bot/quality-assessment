@@ -50,7 +50,10 @@ public final class EtlDtos {
         String fileName,
         int processSettingCount,
         int equipmentOperationCount,
-        int qualityDefectCount
+        int qualityDefectCount,
+        int coreDataCount,
+        int evalDataCount,
+        int kgDataCount
     ) {}
 
     public record UploadStatisticsResponse(

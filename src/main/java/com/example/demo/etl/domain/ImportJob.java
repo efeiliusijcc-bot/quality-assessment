@@ -65,6 +65,7 @@ public class ImportJob {
         this.totalRows = 0;
         this.successRows = 0;
         this.errorRows = 0;
+        this.errorLog = "[]";
         this.startedAt = Instant.now();
     }
 

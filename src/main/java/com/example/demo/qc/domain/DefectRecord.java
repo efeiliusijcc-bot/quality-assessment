@@ -36,13 +36,13 @@ public class DefectRecord {
     @Column(precision = 18, scale = 6)
     private BigDecimal defectArea;
 
-    @Column(precision = 18, scale = 6)
+    @Column(name = "location_x", precision = 18, scale = 6)
     private BigDecimal locationX;
 
-    @Column(precision = 18, scale = 6)
+    @Column(name = "location_y", precision = 18, scale = 6)
     private BigDecimal locationY;
 
-    @Column(precision = 18, scale = 6)
+    @Column(name = "location_z", precision = 18, scale = 6)
     private BigDecimal locationZ;
 
     @JdbcTypeCode(SqlTypes.JSON)

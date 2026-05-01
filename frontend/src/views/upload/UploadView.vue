@@ -416,12 +416,14 @@ const excelUploading = ref(false);
 const excelProgress = ref(0);
 const excelParsedRows = ref(0);
 const excelSuccessRows = ref(0);
+const excelError = ref('');
 
 const excelSummary = computed(() => [
   { label: '导入文件', value: excelFileName.value || '--' },
   { label: '导入进度', value: `${excelProgress.value}%` },
   { label: '工艺设定参数', value: `${excelParsedRows.value}` },
   { label: '设备/缺陷记录', value: `${excelSuccessRows.value}` },
+  ...(excelError.value ? [{ label: '错误信息', value: excelError.value }] : []),
 ]);
 
 const handleExcelFileChange = (uploadFile: UploadFile, _uploadFiles: UploadFiles) => {
@@ -451,12 +453,15 @@ const submitExcelImport = async () => {
     excelProgress.value = 100;
     excelParsedRows.value = result.processSettingCount;
     excelSuccessRows.value = result.equipmentOperationCount + result.qualityDefectCount;
+    excelError.value = '';
     ElMessage.success(
-      `导入成功：工艺设定 ${result.processSettingCount} 条，设备运行 ${result.equipmentOperationCount} 条，质量缺陷 ${result.qualityDefectCount} 条`,
+      `导入成功：工艺设定 ${result.processSettingCount}，设备运行 ${result.equipmentOperationCount}，质量缺陷 ${result.qualityDefectCount}，基础数据 ${result.coreDataCount}，评估数据 ${result.evalDataCount}，知识图谱 ${result.kgDataCount}`,
     );
-  } catch (error) {
+  } catch (error: any) {
     excelProgress.value = 0;
-    throw error;
+    const msg = error?.response?.data?.msg || error?.message || 'Excel导入失败，请检查文件格式';
+    excelError.value = msg;
+    ElMessage.error(msg);
   } finally {
     excelUploading.value = false;
   }
@@ -468,6 +473,7 @@ const resetExcelImport = () => {
   excelProgress.value = 0;
   excelParsedRows.value = 0;
   excelSuccessRows.value = 0;
+  excelError.value = '';
 };
 
 onMounted(() => {

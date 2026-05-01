@@ -36,6 +36,16 @@ export const menus: MenuItem[] = [
     icon: 'Connection',
   },
   {
+    path: '/graph-sync',
+    title: '知识图谱同步',
+    icon: 'Refresh',
+  },
+  {
+    path: '/import-history',
+    title: '导入历史记录',
+    icon: 'Clock',
+  },
+  {
     path: '/export',
     title: '结果筛选与资源导出',
     icon: 'DocumentCopy',

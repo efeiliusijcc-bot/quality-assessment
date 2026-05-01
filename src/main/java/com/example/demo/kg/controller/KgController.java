@@ -13,8 +13,10 @@ import com.example.demo.kg.dto.KgDtos.GraphVisualizationResponse;
 import com.example.demo.kg.dto.KgDtos.KgEntityResponse;
 import com.example.demo.kg.dto.KgDtos.KgRelationResponse;
 import com.example.demo.kg.service.KgService;
+import com.example.demo.kg.service.Neo4jSyncService;
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -29,9 +31,22 @@ import org.springframework.web.bind.annotation.RestController;
 public class KgController {
 
     private final KgService kgService;
+    private final Neo4jSyncService neo4jSyncService;
 
-    public KgController(KgService kgService) {
+    public KgController(KgService kgService, Neo4jSyncService neo4jSyncService) {
         this.kgService = kgService;
+        this.neo4jSyncService = neo4jSyncService;
+    }
+
+    // ─── Neo4j Sync ───
+
+    @PostMapping("/graph/sync")
+    public ApiResponse<Map<String, Integer>> syncToNeo4j() {
+        try {
+            return ApiResponse.success(neo4jSyncService.syncAll());
+        } catch (Exception e) {
+            return ApiResponse.failure(500, "Neo4j sync failed: " + e.getMessage());
+        }
     }
 
     // ─── GAT Optimization ───

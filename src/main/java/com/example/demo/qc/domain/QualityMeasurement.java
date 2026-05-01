@@ -73,8 +73,10 @@ public class QualityMeasurement {
     public UUID getMetricId() { return metricId; }
     public Instant getMeasuredAt() { return measuredAt; }
     public BigDecimal getValueNum() { return valueNum; }
+    public String getValueText() { return valueText; }
     public Boolean getIsPass() { return isPass; }
     public BigDecimal getDeviationValue() { return deviationValue; }
+    public String getMeasurementMethod() { return measurementMethod; }
     public Instant getCreatedAt() { return createdAt; }
 
     public void setUnitId(UUID unitId) { this.unitId = unitId; }
