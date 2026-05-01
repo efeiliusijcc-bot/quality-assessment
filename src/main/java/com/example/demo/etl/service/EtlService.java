@@ -30,6 +30,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.InputStream;
@@ -38,6 +40,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -46,6 +49,8 @@ import java.util.*;
 @Service
 @Transactional
 public class EtlService {
+
+    private static final Logger log = LoggerFactory.getLogger(EtlService.class);
 
     private final ImportJobRepository importJobRepository;
     private final CleaningRuleRepository cleaningRuleRepository;
@@ -272,7 +277,6 @@ public class EtlService {
                 for (int r = 1; r <= sheet.getLastRowNum(); r++) {
                     Row row = sheet.getRow(r);
                     if (row == null) continue;
-                    totalRows++;
                     try {
                         Map<String, String> cells = new LinkedHashMap<>();
                         for (int ci = 0; ci < headers.size(); ci++) {
@@ -289,7 +293,8 @@ public class EtlService {
                                     parseUUID(cells.get("batchid")), cells.get("batchno"), productTypeId,
                                     parseInt(cells.get("planqty")), parseInt(cells.get("actualqty")),
                                     parseTimestamp(cells.get("starttime")), parseTimestamp(cells.get("endtime")),
-                                    coalesce(cells.get("batchstatus"), "CREATED"), parseTimestampOrNow(cells.get("createdat")), "{}");
+                                    coalesce(cells.get("batchstatus"), "CREATED"),                                    parseTimestampOrNow(cells.get("createdat")), "{}");
+                                totalRows++;
                                 processSettingCount++;
                                 break;
                             }
@@ -299,7 +304,8 @@ public class EtlService {
                                     "VALUES (?, ?, ?, ?, ?, ?)",
                                     parseUUID(cells.get("unitid")), parseUUID(cells.get("batchid")),
                                     cells.get("serialno"), parseUUID(cells.get("currentstepid")),
-                                    coalesce(cells.get("unitstatus"), "CREATED"), parseTimestampOrNow(cells.get("createdat")));
+                                    coalesce(cells.get("unitstatus"), "CREATED"),                                    parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 processSettingCount++;
                                 break;
                             }
@@ -311,7 +317,8 @@ public class EtlService {
                                     parseUUID(cells.get("stepid")), parseUUID(cells.get("stationid")), parseUUID(cells.get("equipmentid")),
                                     parseUUID(cells.get("recipeid")), parseUUID(cells.get("operatorid")), cells.get("runno"),
                                     parseTimestamp(cells.get("starttime")), parseTimestamp(cells.get("endtime")),
-                                    coalesce(cells.get("runstatus"), "RUNNING"), parseTimestampOrNow(cells.get("createdat")), "{}");
+                                    coalesce(cells.get("runstatus"), "RUNNING"),                                    parseTimestampOrNow(cells.get("createdat")), "{}");
+                                totalRows++;
                                 equipmentOperationCount++;
                                 break;
                             }
@@ -321,7 +328,8 @@ public class EtlService {
                                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
                                     parseUUID(cells.get("valueid")), parseUUID(cells.get("runid")), parseUUID(cells.get("paramid")),
                                     parseTimestampOrNow(cells.get("measuredat")), parseBigDecimal(cells.get("valuenum")),
-                                    coalesce(cells.get("qualityflag"), "RAW"), parseTimestampOrNow(cells.get("createdat")));
+                                    coalesce(cells.get("qualityflag"), "RAW"),                                    parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 equipmentOperationCount++;
                                 break;
                             }
@@ -342,18 +350,20 @@ public class EtlService {
                                     parseUUID(cells.get("inspectionid")), parseUUID(cells.get("runid")), parseUUID(cells.get("unitid")),
                                     parseUUID(cells.get("stepid")), cells.get("inspectiontype"), cells.get("modelname"),
                                     cells.get("modelversion"), cells.get("resultstatus"), parseBigDecimal(cells.get("confidence")),
-                                    parseTimestampOrNow(cells.get("inspectedat")), parseTimestampOrNow(cells.get("createdat")));
+                                    parseTimestampOrNow(cells.get("inspectedat")),                                    parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 qualityDefectCount++;
                                 break;
                             }
-                            case "defect_record": {
+                            case "defect_record":{
                                 insertIgnoreDuplicate(
                                     "INSERT INTO qc.defect_record (defect_id, inspection_id, unit_id, defect_type_id, defect_count, confidence, severity_level, is_critical, created_at, bbox_json) " +
                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)",
                                     parseUUID(cells.get("defectid")), parseUUID(cells.get("inspectionid")), parseUUID(cells.get("unitid")),
                                     parseUUID(cells.get("defecttypeid")), parseInt(cells.get("defectcount")),
                                     parseBigDecimal(cells.get("confidence")), parseInt(cells.get("severitylevel")),
-                                    parseBoolean(cells.get("iscritical")), parseTimestampOrNow(cells.get("createdat")), "[]");
+                                    parseBoolean(cells.get("iscritical")),                                    parseTimestampOrNow(cells.get("createdat")), "[]");
+                                totalRows++;
                                 qualityDefectCount++;
                                 break;
                             }
@@ -366,6 +376,7 @@ public class EtlService {
                                     parseBigDecimal(cells.get("valuenum")), parseBoolean(cells.get("ispass")),
                                     parseBigDecimal(cells.get("deviationvalue")), coalesce(cells.get("measurementmethod"), "自动检测"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 qualityDefectCount++;
                                 break;
                             }
@@ -377,6 +388,7 @@ public class EtlService {
                                     parseUUID(cells.get("stepid")), cells.get("stepcode"), cells.get("stepname"),
                                     parseInt(cells.get("steporder")), parseBoolean(cells.get("isinspection")),
                                     cells.get("description"), parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 coreDataCount++;
                                 break;
                             }
@@ -388,6 +400,7 @@ public class EtlService {
                                     cells.get("stationcode"), cells.get("stationname"),
                                     cells.get("location"), coalesce(cells.get("status"), "ACTIVE"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 coreDataCount++;
                                 break;
                             }
@@ -400,6 +413,7 @@ public class EtlService {
                                     cells.get("equipmenttype"), cells.get("manufacturer"),
                                     cells.get("modelno"), coalesce(cells.get("status"), "ACTIVE"),
                                     parseLocalDate(cells.get("installedat")), parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 coreDataCount++;
                                 break;
                             }
@@ -410,6 +424,7 @@ public class EtlService {
                                     parseUUID(cells.get("producttypeid")), cells.get("productcode"),
                                     cells.get("productname"), coalesce(cells.get("materialsystem"), "HTCC"),
                                     cells.get("specification"), parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 coreDataCount++;
                                 break;
                             }
@@ -424,6 +439,7 @@ public class EtlService {
                                     parseBigDecimal(cells.get("upperlimit")), parseBigDecimal(cells.get("standardvalue")),
                                     parseBoolean(cells.get("requiredflag")), cells.get("description"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 coreDataCount++;
                                 break;
                             }
@@ -438,6 +454,7 @@ public class EtlService {
                                     coalesce(cells.get("taskstatus"), "CREATED"),
                                     parseTimestampOrNow(cells.get("createdat")),
                                     parseTimestamp(cells.get("finishedat")));
+                                totalRows++;
                                 evalDataCount++;
                                 break;
                             }
@@ -451,6 +468,7 @@ public class EtlService {
                                     parseBoolean(cells.get("ispass")),
                                     cells.get("risklevel"), cells.get("conclusion"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 evalDataCount++;
                                 break;
                             }
@@ -462,6 +480,7 @@ public class EtlService {
                                     parseUUID(cells.get("graphversionid")), cells.get("graphname"),
                                     cells.get("versionno"), cells.get("description"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 kgDataCount++;
                                 break;
                             }
@@ -474,6 +493,7 @@ public class EtlService {
                                     cells.get("reftable"), parseUUID(cells.get("refid")),
                                     cells.get("entitycode"), cells.get("entityname"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 kgDataCount++;
                                 break;
                             }
@@ -486,6 +506,7 @@ public class EtlService {
                                     cells.get("relationtype"), parseBigDecimal(cells.get("relationweight")),
                                     parseBigDecimal(cells.get("confidence")),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 kgDataCount++;
                                 break;
                             }
@@ -581,7 +602,8 @@ public class EtlService {
         try {
             return jdbcTemplate.update(sql, args);
         } catch (DataIntegrityViolationException e) {
-            return 0; // duplicate or FK violation, ignore
+            log.warn("Skipping row due to data integrity violation: {}", e.getMessage());
+            return 0;
         }
     }
 
@@ -629,7 +651,7 @@ public class EtlService {
         for (String pattern : dateTimePatterns) {
             try {
                 LocalDateTime ldt = LocalDateTime.parse(val, DateTimeFormatter.ofPattern(pattern));
-                return Timestamp.from(ldt.toInstant(ZoneOffset.UTC));
+                return Timestamp.from(ldt.atZone(ZoneId.of("Asia/Shanghai")).toInstant());
             } catch (DateTimeParseException ignored) {}
         }
 
