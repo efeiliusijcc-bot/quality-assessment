@@ -29,16 +29,19 @@ import com.example.demo.qc.repository.QualityMeasurementRepository;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
-import org.neo4j.driver.Transaction;
 import org.neo4j.driver.Value;
 import org.neo4j.driver.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Sort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.sql.ResultSet;
+import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 public class Neo4jSyncService {
@@ -67,6 +70,7 @@ public class Neo4jSyncService {
 
     // Neo4j driver
     private final Driver neo4jDriver;
+    private final JdbcTemplate jdbcTemplate;
 
     public Neo4jSyncService(
             ProcessStepRepository processStepRepo,
@@ -82,7 +86,8 @@ public class Neo4jSyncService {
             InspectionTaskRepository inspectionTaskRepo,
             DefectRecordRepository defectRecordRepo,
             QualityMeasurementRepository qualityMeasurementRepo,
-            Driver neo4jDriver) {
+            Driver neo4jDriver,
+            JdbcTemplate jdbcTemplate) {
         this.processStepRepo = processStepRepo;
         this.workstationRepo = workstationRepo;
         this.equipmentRepo = equipmentRepo;
@@ -97,14 +102,27 @@ public class Neo4jSyncService {
         this.defectRecordRepo = defectRecordRepo;
         this.qualityMeasurementRepo = qualityMeasurementRepo;
         this.neo4jDriver = neo4jDriver;
+        this.jdbcTemplate = jdbcTemplate;
     }
+
+    public record GraphSyncTaskStatus(
+            String batchId,
+            String syncStatus,
+            String triggerSource,
+            Instant startedAt,
+            Instant finishedAt,
+            String errorMessage,
+            Integer nodeCount,
+            Integer relationCount
+    ) {}
 
     /**
      * Full sync: reads all data from PostgreSQL and writes to Neo4j.
      * Returns a summary map with counts for each node/relationship type.
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public Map<String, Integer> syncAll() {
+        ensureGraphSyncTaskTable();
         Map<String, Integer> summary = new LinkedHashMap<>();
 
         try (Session session = neo4jDriver.session()) {
@@ -126,6 +144,146 @@ public class Neo4jSyncService {
         }
 
         return summary;
+    }
+
+    public List<GraphSyncTaskStatus> listBatchSyncTasks() {
+        ensureGraphSyncTaskTable();
+
+        Map<String, GraphSyncTaskStatus> latestStatusByBatch = new LinkedHashMap<>();
+        jdbcTemplate.query(
+                "SELECT batch_id, sync_status, trigger_source, started_at, finished_at, error_message, node_count, relation_count " +
+                        "FROM kg.graph_sync_task ORDER BY started_at DESC",
+                rs -> {
+                    String batchId = rs.getString("batch_id");
+                    latestStatusByBatch.putIfAbsent(batchId, mapTaskStatus(rs));
+                });
+
+        List<ProductionBatch> batches = productionBatchRepo.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
+        List<GraphSyncTaskStatus> result = new ArrayList<>();
+        for (ProductionBatch batch : batches) {
+            String batchNo = batch.getBatchNo();
+            GraphSyncTaskStatus persisted = latestStatusByBatch.get(batchNo);
+            if (persisted != null) {
+                result.add(persisted);
+                continue;
+            }
+
+            GraphCounts counts = countBatchGraph(batchNo);
+            result.add(new GraphSyncTaskStatus(
+                    batchNo,
+                    counts.nodeCount() > 0 ? "SUCCESS" : "PENDING",
+                    counts.nodeCount() > 0 ? "NEO4J_SCAN" : "NOT_SYNCED",
+                    null,
+                    null,
+                    null,
+                    counts.nodeCount(),
+                    counts.relationCount()));
+        }
+        return result;
+    }
+
+    public GraphSyncTaskStatus retryBatch(String batchId) {
+        ensureGraphSyncTaskTable();
+
+        Long taskId = jdbcTemplate.queryForObject(
+                "INSERT INTO kg.graph_sync_task (batch_id, sync_status, trigger_source, started_at) " +
+                        "VALUES (?, 'RUNNING', 'MANUAL_RETRY', now()) RETURNING id",
+                Long.class,
+                batchId);
+
+        try {
+            syncAll();
+            GraphCounts counts = countBatchGraph(batchId);
+            jdbcTemplate.update(
+                    "UPDATE kg.graph_sync_task SET sync_status = 'SUCCESS', finished_at = now(), " +
+                            "error_message = NULL, node_count = ?, relation_count = ? WHERE id = ?",
+                    counts.nodeCount(), counts.relationCount(), taskId);
+            return latestTaskStatus(batchId).orElseThrow();
+        } catch (Exception e) {
+            jdbcTemplate.update(
+                    "UPDATE kg.graph_sync_task SET sync_status = 'FAILED', finished_at = now(), error_message = ? WHERE id = ?",
+                    truncate(e.getMessage(), 1000), taskId);
+            return latestTaskStatus(batchId).orElse(new GraphSyncTaskStatus(
+                    batchId, "FAILED", "MANUAL_RETRY", null, Instant.now(), e.getMessage(), 0, 0));
+        }
+    }
+
+    private Optional<GraphSyncTaskStatus> latestTaskStatus(String batchId) {
+        List<GraphSyncTaskStatus> rows = jdbcTemplate.query(
+                "SELECT batch_id, sync_status, trigger_source, started_at, finished_at, error_message, node_count, relation_count " +
+                        "FROM kg.graph_sync_task WHERE batch_id = ? ORDER BY started_at DESC LIMIT 1",
+                (rs, rowNum) -> mapTaskStatus(rs),
+                batchId);
+        return rows.stream().findFirst();
+    }
+
+    private void ensureGraphSyncTaskTable() {
+        jdbcTemplate.execute("CREATE SCHEMA IF NOT EXISTS kg");
+        jdbcTemplate.execute("""
+                CREATE TABLE IF NOT EXISTS kg.graph_sync_task (
+                    id bigserial PRIMARY KEY,
+                    batch_id varchar(128) NOT NULL,
+                    sync_status varchar(32) NOT NULL,
+                    trigger_source varchar(64) NOT NULL,
+                    started_at timestamptz,
+                    finished_at timestamptz,
+                    error_message text,
+                    node_count integer,
+                    relation_count integer
+                )
+                """);
+        jdbcTemplate.execute("CREATE INDEX IF NOT EXISTS idx_graph_sync_task_batch_started ON kg.graph_sync_task(batch_id, started_at DESC)");
+    }
+
+    private GraphSyncTaskStatus mapTaskStatus(ResultSet rs) throws java.sql.SQLException {
+        return new GraphSyncTaskStatus(
+                rs.getString("batch_id"),
+                rs.getString("sync_status"),
+                rs.getString("trigger_source"),
+                toInstant(rs.getTimestamp("started_at")),
+                toInstant(rs.getTimestamp("finished_at")),
+                rs.getString("error_message"),
+                (Integer) rs.getObject("node_count"),
+                (Integer) rs.getObject("relation_count"));
+    }
+
+    private Instant toInstant(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toInstant();
+    }
+
+    private record GraphCounts(int nodeCount, int relationCount) {}
+
+    private GraphCounts countBatchGraph(String batchId) {
+        if (batchId == null || batchId.isBlank()) {
+            return new GraphCounts(0, 0);
+        }
+
+        try (Session session = neo4jDriver.session()) {
+            Result result = session.run(
+                    "MATCH (b) WHERE (b:ProductionBatch OR b:Batch) " +
+                            "AND (b.batchNo = $batchId OR b.batchId = $batchId) " +
+                            "OPTIONAL MATCH p=(b)-[*0..4]-(n) " +
+                            "WITH collect(DISTINCT n) AS nodes, collect(p) AS paths " +
+                            "UNWIND paths AS path " +
+                            "UNWIND relationships(path) AS rel " +
+                            "RETURN size(nodes) AS nodeCount, count(DISTINCT rel) AS relationCount",
+                    Values.parameters("batchId", batchId));
+            if (!result.hasNext()) {
+                return new GraphCounts(0, 0);
+            }
+            org.neo4j.driver.Record record = result.next();
+            return new GraphCounts(record.get("nodeCount").asInt(0), record.get("relationCount").asInt(0));
+        } catch (Exception e) {
+            log.warn("Failed to count Neo4j batch graph for batchId={}: {}", batchId, e.getMessage());
+            return new GraphCounts(0, 0);
+        }
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 
     // ─────────────────────────────────────────────────────
@@ -156,24 +314,23 @@ public class Neo4jSyncService {
         List<ProcessStep> items = processStepRepo.findAll();
         int count = 0;
         for (List<ProcessStep> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ProcessStep s : batch) {
-                    tx.run("MERGE (n:ProcessStep {stepId: $stepId}) " +
-                                    "SET n.stepCode = $stepCode, n.stepName = $stepName, " +
-                                    "n.stepOrder = $stepOrder, n.isInspection = $isInspection, " +
-                                    "n.description = $description",
-                            Values.parameters(
-                                    "stepId", s.getStepId().toString(),
-                                    "stepCode", s.getStepCode(),
-                                    "stepName", s.getStepName(),
-                                    "stepOrder", s.getStepOrder(),
-                                    "isInspection", s.getIsInspection(),
-                                    "description", s.getDescription()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(s -> row(
+                            "stepId", s.getStepId().toString(),
+                            "stepCode", s.getStepCode(),
+                            "stepName", s.getStepName(),
+                            "stepOrder", s.getStepOrder(),
+                            "isInspection", s.getIsInspection(),
+                            "description", s.getDescription()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ProcessStep {stepId: row.stepId}) " +
+                            "SET n.stepCode = row.stepCode, n.stepName = row.stepName, " +
+                            "n.stepOrder = row.stepOrder, n.isInspection = row.isInspection, " +
+                            "n.description = row.description",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -182,24 +339,22 @@ public class Neo4jSyncService {
         List<Workstation> items = workstationRepo.findAll();
         int count = 0;
         for (List<Workstation> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (Workstation w : batch) {
-                    tx.run("MERGE (n:Workstation {stationId: $stationId}) " +
-                                    "SET n.stepId = $stepId, n.stationCode = $stationCode, " +
-                                    "n.stationName = $stationName, n.location = $location, " +
-                                    "n.status = $status",
-                            Values.parameters(
-                                    "stationId", w.getStationId().toString(),
-                                    "stepId", w.getStepId().toString(),
-                                    "stationCode", w.getStationCode(),
-                                    "stationName", w.getStationName(),
-                                    "location", w.getLocation(),
-                                    "status", w.getStatus()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(w -> row(
+                            "stationId", w.getStationId().toString(),
+                            "stepId", w.getStepId().toString(),
+                            "stationCode", w.getStationCode(),
+                            "stationName", w.getStationName(),
+                            "location", w.getLocation(),
+                            "status", w.getStatus()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:Workstation {stationId: row.stationId}) " +
+                            "SET n.stepId = row.stepId, n.stationCode = row.stationCode, " +
+                            "n.stationName = row.stationName, n.location = row.location, n.status = row.status",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -208,27 +363,25 @@ public class Neo4jSyncService {
         List<Equipment> items = equipmentRepo.findAll();
         int count = 0;
         for (List<Equipment> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (Equipment e : batch) {
-                    tx.run("MERGE (n:Equipment {equipmentId: $equipmentId}) " +
-                                    "SET n.stationId = $stationId, n.equipmentCode = $equipmentCode, " +
-                                    "n.equipmentName = $equipmentName, n.equipmentType = $equipmentType, " +
-                                    "n.manufacturer = $manufacturer, n.modelNo = $modelNo, " +
-                                    "n.status = $status",
-                            Values.parameters(
-                                    "equipmentId", e.getEquipmentId().toString(),
-                                    "stationId", e.getStationId() != null ? e.getStationId().toString() : null,
-                                    "equipmentCode", e.getEquipmentCode(),
-                                    "equipmentName", e.getEquipmentName(),
-                                    "equipmentType", e.getEquipmentType(),
-                                    "manufacturer", e.getManufacturer(),
-                                    "modelNo", e.getModelNo(),
-                                    "status", e.getStatus()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(e -> row(
+                            "equipmentId", e.getEquipmentId().toString(),
+                            "stationId", e.getStationId() != null ? e.getStationId().toString() : null,
+                            "equipmentCode", e.getEquipmentCode(),
+                            "equipmentName", e.getEquipmentName(),
+                            "equipmentType", e.getEquipmentType(),
+                            "manufacturer", e.getManufacturer(),
+                            "modelNo", e.getModelNo(),
+                            "status", e.getStatus()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:Equipment {equipmentId: row.equipmentId}) " +
+                            "SET n.stationId = row.stationId, n.equipmentCode = row.equipmentCode, " +
+                            "n.equipmentName = row.equipmentName, n.equipmentType = row.equipmentType, " +
+                            "n.manufacturer = row.manufacturer, n.modelNo = row.modelNo, n.status = row.status",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -237,22 +390,21 @@ public class Neo4jSyncService {
         List<ProductType> items = productTypeRepo.findAll();
         int count = 0;
         for (List<ProductType> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ProductType pt : batch) {
-                    tx.run("MERGE (n:ProductType {productTypeId: $productTypeId}) " +
-                                    "SET n.productCode = $productCode, n.productName = $productName, " +
-                                    "n.materialSystem = $materialSystem, n.specification = $specification",
-                            Values.parameters(
-                                    "productTypeId", pt.getProductTypeId().toString(),
-                                    "productCode", pt.getProductCode(),
-                                    "productName", pt.getProductName(),
-                                    "materialSystem", pt.getMaterialSystem(),
-                                    "specification", pt.getSpecification()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(pt -> row(
+                            "productTypeId", pt.getProductTypeId().toString(),
+                            "productCode", pt.getProductCode(),
+                            "productName", pt.getProductName(),
+                            "materialSystem", pt.getMaterialSystem(),
+                            "specification", pt.getSpecification()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ProductType {productTypeId: row.productTypeId}) " +
+                            "SET n.productCode = row.productCode, n.productName = row.productName, " +
+                            "n.materialSystem = row.materialSystem, n.specification = row.specification",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -261,28 +413,27 @@ public class Neo4jSyncService {
         List<ParameterDef> items = parameterDefRepo.findAll();
         int count = 0;
         for (List<ParameterDef> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ParameterDef pd : batch) {
-                    tx.run("MERGE (n:ParameterDef {paramId: $paramId}) " +
-                                    "SET n.stepId = $stepId, n.paramCode = $paramCode, " +
-                                    "n.paramName = $paramName, n.paramCategory = $paramCategory, " +
-                                    "n.dataType = $dataType, n.unit = $unit, " +
-                                    "n.sourceType = $sourceType, n.requiredFlag = $requiredFlag",
-                            Values.parameters(
-                                    "paramId", pd.getParamId().toString(),
-                                    "stepId", pd.getStepId() != null ? pd.getStepId().toString() : null,
-                                    "paramCode", pd.getParamCode(),
-                                    "paramName", pd.getParamName(),
-                                    "paramCategory", pd.getParamCategory(),
-                                    "dataType", pd.getDataType(),
-                                    "unit", pd.getUnit(),
-                                    "sourceType", pd.getRequiredFlag() != null && pd.getRequiredFlag() ? "REQUIRED" : "OPTIONAL",
-                                    "requiredFlag", pd.getRequiredFlag()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(pd -> row(
+                            "paramId", pd.getParamId().toString(),
+                            "stepId", pd.getStepId() != null ? pd.getStepId().toString() : null,
+                            "paramCode", pd.getParamCode(),
+                            "paramName", pd.getParamName(),
+                            "paramCategory", pd.getParamCategory(),
+                            "dataType", pd.getDataType(),
+                            "unit", pd.getUnit(),
+                            "sourceType", pd.getRequiredFlag() != null && pd.getRequiredFlag() ? "REQUIRED" : "OPTIONAL",
+                            "requiredFlag", pd.getRequiredFlag()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ParameterDef {paramId: row.paramId}) " +
+                            "SET n.stepId = row.stepId, n.paramCode = row.paramCode, " +
+                            "n.paramName = row.paramName, n.paramCategory = row.paramCategory, " +
+                            "n.dataType = row.dataType, n.unit = row.unit, " +
+                            "n.sourceType = row.sourceType, n.requiredFlag = row.requiredFlag",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -291,24 +442,22 @@ public class Neo4jSyncService {
         List<ProductionBatch> items = productionBatchRepo.findAll();
         int count = 0;
         for (List<ProductionBatch> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ProductionBatch pb : batch) {
-                    tx.run("MERGE (n:ProductionBatch {batchId: $batchId}) " +
-                                    "SET n.batchNo = $batchNo, n.productTypeId = $productTypeId, " +
-                                    "n.planQty = $planQty, n.actualQty = $actualQty, " +
-                                    "n.batchStatus = $batchStatus",
-                            Values.parameters(
-                                    "batchId", pb.getBatchId().toString(),
-                                    "batchNo", pb.getBatchNo(),
-                                    "productTypeId", pb.getProductTypeId().toString(),
-                                    "planQty", pb.getPlanQty(),
-                                    "actualQty", pb.getActualQty(),
-                                    "batchStatus", pb.getBatchStatus()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(pb -> row(
+                            "batchId", pb.getBatchId().toString(),
+                            "batchNo", pb.getBatchNo(),
+                            "productTypeId", pb.getProductTypeId().toString(),
+                            "planQty", pb.getPlanQty(),
+                            "actualQty", pb.getActualQty(),
+                            "batchStatus", pb.getBatchStatus()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ProductionBatch {batchId: row.batchId}) " +
+                            "SET n.batchNo = row.batchNo, n.productTypeId = row.productTypeId, " +
+                            "n.planQty = row.planQty, n.actualQty = row.actualQty, n.batchStatus = row.batchStatus",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -317,21 +466,19 @@ public class Neo4jSyncService {
         List<ProductUnit> items = productUnitRepo.findAll();
         int count = 0;
         for (List<ProductUnit> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ProductUnit pu : batch) {
-                    tx.run("MERGE (n:ProductUnit {unitId: $unitId}) " +
-                                    "SET n.batchId = $batchId, n.serialNo = $serialNo, " +
-                                    "n.unitStatus = $unitStatus",
-                            Values.parameters(
-                                    "unitId", pu.getUnitId().toString(),
-                                    "batchId", pu.getBatchId().toString(),
-                                    "serialNo", pu.getSerialNo(),
-                                    "unitStatus", pu.getUnitStatus()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(pu -> row(
+                            "unitId", pu.getUnitId().toString(),
+                            "batchId", pu.getBatchId().toString(),
+                            "serialNo", pu.getSerialNo(),
+                            "unitStatus", pu.getUnitStatus()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ProductUnit {unitId: row.unitId}) " +
+                            "SET n.batchId = row.batchId, n.serialNo = row.serialNo, n.unitStatus = row.unitStatus",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -340,27 +487,25 @@ public class Neo4jSyncService {
         List<ProcessRun> items = processRunRepo.findAll();
         int count = 0;
         for (List<ProcessRun> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ProcessRun pr : batch) {
-                    tx.run("MERGE (n:ProcessRun {runId: $runId}) " +
-                                    "SET n.batchId = $batchId, n.unitId = $unitId, " +
-                                    "n.stepId = $stepId, n.stationId = $stationId, " +
-                                    "n.equipmentId = $equipmentId, n.runNo = $runNo, " +
-                                    "n.runStatus = $runStatus",
-                            Values.parameters(
-                                    "runId", pr.getRunId().toString(),
-                                    "batchId", pr.getBatchId().toString(),
-                                    "unitId", pr.getUnitId() != null ? pr.getUnitId().toString() : null,
-                                    "stepId", pr.getStepId().toString(),
-                                    "stationId", pr.getStationId() != null ? pr.getStationId().toString() : null,
-                                    "equipmentId", pr.getEquipmentId() != null ? pr.getEquipmentId().toString() : null,
-                                    "runNo", pr.getRunNo(),
-                                    "runStatus", pr.getRunStatus()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(pr -> row(
+                            "runId", pr.getRunId().toString(),
+                            "batchId", pr.getBatchId().toString(),
+                            "unitId", pr.getUnitId() != null ? pr.getUnitId().toString() : null,
+                            "stepId", pr.getStepId().toString(),
+                            "stationId", pr.getStationId() != null ? pr.getStationId().toString() : null,
+                            "equipmentId", pr.getEquipmentId() != null ? pr.getEquipmentId().toString() : null,
+                            "runNo", pr.getRunNo(),
+                            "runStatus", pr.getRunStatus()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ProcessRun {runId: row.runId}) " +
+                            "SET n.batchId = row.batchId, n.unitId = row.unitId, n.stepId = row.stepId, " +
+                            "n.stationId = row.stationId, n.equipmentId = row.equipmentId, " +
+                            "n.runNo = row.runNo, n.runStatus = row.runStatus",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -369,24 +514,22 @@ public class Neo4jSyncService {
         List<ParameterValue> items = parameterValueRepo.findAll();
         int count = 0;
         for (List<ParameterValue> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (ParameterValue pv : batch) {
-                    tx.run("MERGE (n:ParameterValue {valueId: $valueId}) " +
-                                    "SET n.runId = $runId, n.paramId = $paramId, " +
-                                    "n.valueNum = $valueNum, n.valueText = $valueText, " +
-                                    "n.qualityFlag = $qualityFlag",
-                            Values.parameters(
-                                    "valueId", pv.getValueId().toString(),
-                                    "runId", pv.getRunId().toString(),
-                                    "paramId", pv.getParamId().toString(),
-                                    "valueNum", pv.getValueNum() != null ? pv.getValueNum().doubleValue() : null,
-                                    "valueText", pv.getValueText(),
-                                    "qualityFlag", pv.getQualityFlag()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(pv -> row(
+                            "valueId", pv.getValueId().toString(),
+                            "runId", pv.getRunId().toString(),
+                            "paramId", pv.getParamId().toString(),
+                            "valueNum", pv.getValueNum() != null ? pv.getValueNum().doubleValue() : null,
+                            "valueText", pv.getValueText(),
+                            "qualityFlag", pv.getQualityFlag()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:ParameterValue {valueId: row.valueId}) " +
+                            "SET n.runId = row.runId, n.paramId = row.paramId, n.valueNum = row.valueNum, " +
+                            "n.valueText = row.valueText, n.qualityFlag = row.qualityFlag",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -395,25 +538,24 @@ public class Neo4jSyncService {
         List<DefectType> items = defectTypeRepo.findAll();
         int count = 0;
         for (List<DefectType> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (DefectType dt : batch) {
-                    tx.run("MERGE (n:DefectType {defectTypeId: $defectTypeId}) " +
-                                    "SET n.stepId = $stepId, n.defectCode = $defectCode, " +
-                                    "n.defectName = $defectName, n.defectCategory = $defectCategory, " +
-                                    "n.defaultSeverity = $defaultSeverity, n.description = $description",
-                            Values.parameters(
-                                    "defectTypeId", dt.getDefectTypeId().toString(),
-                                    "stepId", dt.getStepId() != null ? dt.getStepId().toString() : null,
-                                    "defectCode", dt.getDefectCode(),
-                                    "defectName", dt.getDefectName(),
-                                    "defectCategory", dt.getDefectCategory(),
-                                    "defaultSeverity", dt.getDefaultSeverity(),
-                                    "description", dt.getDescription()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(dt -> row(
+                            "defectTypeId", dt.getDefectTypeId().toString(),
+                            "stepId", dt.getStepId() != null ? dt.getStepId().toString() : null,
+                            "defectCode", dt.getDefectCode(),
+                            "defectName", dt.getDefectName(),
+                            "defectCategory", dt.getDefectCategory(),
+                            "defaultSeverity", dt.getDefaultSeverity(),
+                            "description", dt.getDescription()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:DefectType {defectTypeId: row.defectTypeId}) " +
+                            "SET n.stepId = row.stepId, n.defectCode = row.defectCode, " +
+                            "n.defectName = row.defectName, n.defectCategory = row.defectCategory, " +
+                            "n.defaultSeverity = row.defaultSeverity, n.description = row.description",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -422,28 +564,26 @@ public class Neo4jSyncService {
         List<InspectionTask> items = inspectionTaskRepo.findAll();
         int count = 0;
         for (List<InspectionTask> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (InspectionTask it : batch) {
-                    tx.run("MERGE (n:InspectionTask {inspectionId: $inspectionId}) " +
-                                    "SET n.runId = $runId, n.unitId = $unitId, " +
-                                    "n.stepId = $stepId, n.inspectionType = $inspectionType, " +
-                                    "n.modelName = $modelName, n.modelVersion = $modelVersion, " +
-                                    "n.resultStatus = $resultStatus, n.confidence = $confidence",
-                            Values.parameters(
-                                    "inspectionId", it.getInspectionId().toString(),
-                                    "runId", it.getRunId().toString(),
-                                    "unitId", it.getUnitId() != null ? it.getUnitId().toString() : null,
-                                    "stepId", it.getStepId().toString(),
-                                    "inspectionType", it.getInspectionType(),
-                                    "modelName", it.getModelName(),
-                                    "modelVersion", it.getModelVersion(),
-                                    "resultStatus", it.getResultStatus(),
-                                    "confidence", it.getConfidence() != null ? it.getConfidence().doubleValue() : null
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(it -> row(
+                            "inspectionId", it.getInspectionId().toString(),
+                            "runId", it.getRunId().toString(),
+                            "unitId", it.getUnitId() != null ? it.getUnitId().toString() : null,
+                            "stepId", it.getStepId().toString(),
+                            "inspectionType", it.getInspectionType(),
+                            "modelName", it.getModelName(),
+                            "modelVersion", it.getModelVersion(),
+                            "resultStatus", it.getResultStatus(),
+                            "confidence", it.getConfidence() != null ? it.getConfidence().doubleValue() : null))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:InspectionTask {inspectionId: row.inspectionId}) " +
+                            "SET n.runId = row.runId, n.unitId = row.unitId, n.stepId = row.stepId, " +
+                            "n.inspectionType = row.inspectionType, n.modelName = row.modelName, " +
+                            "n.modelVersion = row.modelVersion, n.resultStatus = row.resultStatus, n.confidence = row.confidence",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -452,27 +592,25 @@ public class Neo4jSyncService {
         List<DefectRecord> items = defectRecordRepo.findAll();
         int count = 0;
         for (List<DefectRecord> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (DefectRecord dr : batch) {
-                    tx.run("MERGE (n:DefectRecord {defectId: $defectId}) " +
-                                    "SET n.inspectionId = $inspectionId, n.unitId = $unitId, " +
-                                    "n.defectTypeId = $defectTypeId, n.defectCount = $defectCount, " +
-                                    "n.confidence = $confidence, n.severityLevel = $severityLevel, " +
-                                    "n.isCritical = $isCritical",
-                            Values.parameters(
-                                    "defectId", dr.getDefectId().toString(),
-                                    "inspectionId", dr.getInspectionId().toString(),
-                                    "unitId", dr.getUnitId() != null ? dr.getUnitId().toString() : null,
-                                    "defectTypeId", dr.getDefectTypeId().toString(),
-                                    "defectCount", dr.getDefectCount(),
-                                    "confidence", dr.getConfidence() != null ? dr.getConfidence().doubleValue() : null,
-                                    "severityLevel", dr.getSeverityLevel(),
-                                    "isCritical", dr.getIsCritical()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(dr -> row(
+                            "defectId", dr.getDefectId().toString(),
+                            "inspectionId", dr.getInspectionId().toString(),
+                            "unitId", dr.getUnitId() != null ? dr.getUnitId().toString() : null,
+                            "defectTypeId", dr.getDefectTypeId().toString(),
+                            "defectCount", dr.getDefectCount(),
+                            "confidence", dr.getConfidence() != null ? dr.getConfidence().doubleValue() : null,
+                            "severityLevel", dr.getSeverityLevel(),
+                            "isCritical", dr.getIsCritical()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:DefectRecord {defectId: row.defectId}) " +
+                            "SET n.inspectionId = row.inspectionId, n.unitId = row.unitId, " +
+                            "n.defectTypeId = row.defectTypeId, n.defectCount = row.defectCount, " +
+                            "n.confidence = row.confidence, n.severityLevel = row.severityLevel, n.isCritical = row.isCritical",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -481,28 +619,26 @@ public class Neo4jSyncService {
         List<QualityMeasurement> items = qualityMeasurementRepo.findAll();
         int count = 0;
         for (List<QualityMeasurement> batch : partition(items, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (QualityMeasurement qm : batch) {
-                    tx.run("MERGE (n:QualityMeasurement {measurementId: $measurementId}) " +
-                                    "SET n.runId = $runId, n.unitId = $unitId, " +
-                                    "n.metricId = $metricId, n.valueNum = $valueNum, " +
-                                    "n.valueText = $valueText, n.isPass = $isPass, " +
-                                    "n.deviationValue = $deviationValue, n.measurementMethod = $measurementMethod",
-                            Values.parameters(
-                                    "measurementId", qm.getMeasurementId().toString(),
-                                    "runId", qm.getRunId().toString(),
-                                    "unitId", qm.getUnitId() != null ? qm.getUnitId().toString() : null,
-                                    "metricId", qm.getMetricId().toString(),
-                                    "valueNum", qm.getValueNum() != null ? qm.getValueNum().doubleValue() : null,
-                                    "valueText", qm.getValueText(),
-                                    "isPass", qm.getIsPass(),
-                                    "deviationValue", qm.getDeviationValue() != null ? qm.getDeviationValue().doubleValue() : null,
-                                    "measurementMethod", qm.getMeasurementMethod()
-                            ));
-                }
-                tx.commit();
-                count += batch.size();
-            }
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(qm -> row(
+                            "measurementId", qm.getMeasurementId().toString(),
+                            "runId", qm.getRunId().toString(),
+                            "unitId", qm.getUnitId() != null ? qm.getUnitId().toString() : null,
+                            "metricId", qm.getMetricId().toString(),
+                            "valueNum", qm.getValueNum() != null ? qm.getValueNum().doubleValue() : null,
+                            "valueText", qm.getValueText(),
+                            "isPass", qm.getIsPass(),
+                            "deviationValue", qm.getDeviationValue() != null ? qm.getDeviationValue().doubleValue() : null,
+                            "measurementMethod", qm.getMeasurementMethod()))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:QualityMeasurement {measurementId: row.measurementId}) " +
+                            "SET n.runId = row.runId, n.unitId = row.unitId, n.metricId = row.metricId, " +
+                            "n.valueNum = row.valueNum, n.valueText = row.valueText, n.isPass = row.isPass, " +
+                            "n.deviationValue = row.deviationValue, n.measurementMethod = row.measurementMethod",
+                    rows);
+            count += batch.size();
         }
         return count;
     }
@@ -591,35 +727,31 @@ public class Neo4jSyncService {
             // Index may already exist
         }
 
-        // Use UNWIND approach for batch relationship creation
-        String relCypher = String.format(
-                "MATCH (a:%s {%s: $srcKey}) " +
-                        "MATCH (b:%s {%s: $tgtKey}) " +
-                        "MERGE (a)-[:%s]->(b)",
-                sourceLabel, sourceKey,
-                targetLabel, targetKey,
-                relType);
-
         int count = 0;
         String query = String.format("MATCH (n:%s) RETURN n.%s AS srcKey, n.%s AS fkVal",
                 sourceLabel, sourceKey, fkProperty);
 
         Result result = session.run(query);
         List<org.neo4j.driver.Record> records = result.list();
+        String relCypher = String.format(
+                "UNWIND $rows AS row " +
+                        "MATCH (a:%s {%s: row.srcKey}) " +
+                        "MATCH (b:%s {%s: row.tgtKey}) " +
+                        "MERGE (a)-[:%s]->(b)",
+                sourceLabel, sourceKey,
+                targetLabel, targetKey,
+                relType);
 
         for (List<org.neo4j.driver.Record> batch : partition(records, BATCH_SIZE)) {
-            try (Transaction tx = session.beginTransaction()) {
-                for (org.neo4j.driver.Record rec : batch) {
-                    String srcKeyValue = rec.get("srcKey").asString();
-                    Value fkVal = rec.get("fkVal");
-                    if (fkVal.isNull()) continue;
-
-                    String fkValue = fkVal.asString();
-                    tx.run(relCypher,
-                            Values.parameters("srcKey", srcKeyValue, "tgtKey", fkValue));
-                    count++;
-                }
-                tx.commit();
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (org.neo4j.driver.Record rec : batch) {
+                Value fkVal = rec.get("fkVal");
+                if (fkVal.isNull()) continue;
+                rows.add(row("srcKey", rec.get("srcKey").asString(), "tgtKey", fkVal.asString()));
+            }
+            if (!rows.isEmpty()) {
+                runBatch(session, relCypher, rows);
+                count += rows.size();
             }
         }
         return count;
@@ -630,33 +762,12 @@ public class Neo4jSyncService {
      * Matches via runId: InspectionTask.runId = QualityMeasurement.runId
      */
     private int createMeasurementRelationships(Session session) {
-        String cypher =
+        Result result = session.run(
                 "MATCH (i:InspectionTask) " +
                         "MATCH (qm:QualityMeasurement {runId: i.runId}) " +
-                        "MERGE (i)-[:HAS_MEASUREMENT]->(qm)";
-
-        int count = 0;
-        try (Transaction tx = session.beginTransaction()) {
-            Result result = tx.run("MATCH (i:InspectionTask) RETURN i.runId AS runId");
-            List<org.neo4j.driver.Record> records = result.list();
-
-            for (List<org.neo4j.driver.Record> batch : partition(records, BATCH_SIZE)) {
-                try (Transaction batchTx = session.beginTransaction()) {
-                    for (org.neo4j.driver.Record rec : batch) {
-                        String runId = rec.get("runId").asString();
-                        batchTx.run(
-                                "MATCH (i:InspectionTask {runId: $runId}) " +
-                                        "MATCH (qm:QualityMeasurement {runId: $runId}) " +
-                                        "MERGE (i)-[:HAS_MEASUREMENT]->(qm)",
-                                Values.parameters("runId", runId));
-                        count++;
-                    }
-                    batchTx.commit();
-                }
-            }
-            tx.commit();
-        }
-        return count;
+                        "MERGE (i)-[:HAS_MEASUREMENT]->(qm) " +
+                        "RETURN count(*) AS count");
+        return result.single().get("count").asInt(0);
     }
 
     // ─────────────────────────────────────────────────────
@@ -670,5 +781,20 @@ public class Neo4jSyncService {
             partitions.add(list.subList(i, Math.min(i + size, list.size())));
         }
         return partitions;
+    }
+
+    private void runBatch(Session session, String cypher, List<Map<String, Object>> rows) {
+        if (rows.isEmpty()) {
+            return;
+        }
+        session.run(cypher, Values.parameters("rows", rows)).consume();
+    }
+
+    private Map<String, Object> row(Object... values) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        for (int i = 0; i < values.length; i += 2) {
+            row.put((String) values[i], values[i + 1]);
+        }
+        return row;
     }
 }

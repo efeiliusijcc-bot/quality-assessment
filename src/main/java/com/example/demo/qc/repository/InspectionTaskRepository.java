@@ -7,5 +7,6 @@ import java.util.UUID;
 
 public interface InspectionTaskRepository extends JpaRepository<InspectionTask, UUID> {
     List<InspectionTask> findByRunIdOrderByInspectedAtDesc(UUID runId);
+    List<InspectionTask> findByRunIdIn(List<UUID> runIds);
     List<InspectionTask> findByUnitId(UUID unitId);
 }

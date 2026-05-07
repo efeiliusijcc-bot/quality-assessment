@@ -28,19 +28,19 @@ public class EvalController {
     @GetMapping("/assessment/qualified")
     public ApiResponse<QualifiedDashboardData> getQualifiedDashboard(
             @RequestParam(required = false) String batchId) {
-        return ApiResponse.success(evalService.getQualifiedDashboard(parseBatchId(batchId)));
+        return ApiResponse.success(evalService.getQualifiedDashboard(batchId));
     }
 
     @GetMapping("/assessment/judgment")
     public ApiResponse<JudgmentDashboardData> getJudgmentDashboard(
             @RequestParam(required = false) String batchId) {
-        return ApiResponse.success(evalService.getJudgmentDashboard(parseBatchId(batchId)));
+        return ApiResponse.success(evalService.getJudgmentDashboard(batchId));
     }
 
     @GetMapping("/assessment/prediction")
     public ApiResponse<PredictionDashboardData> getPredictionDashboard(
             @RequestParam(required = false) String batchId) {
-        return ApiResponse.success(evalService.getPredictionDashboard(parseBatchId(batchId)));
+        return ApiResponse.success(evalService.getPredictionDashboard(batchId));
     }
 
     @GetMapping("/assessment/history")

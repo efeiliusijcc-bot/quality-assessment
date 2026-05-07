@@ -354,11 +354,23 @@ public class KgService {
     // ═══════════════════════════════════════════════════════
 
     public GraphVisualizationResponse getGraphVisualization(String batchId) {
-        UUID parsedId;
+        GraphVisualizationResponse neo4jGraph = getGraphVisualizationFromNeo4j(batchId);
+        if (!neo4jGraph.nodes().isEmpty()) {
+            return neo4jGraph;
+        }
+
+        UUID parsedId = null;
         try {
             parsedId = UUID.fromString(batchId);
         } catch (IllegalArgumentException e) {
-            throw new BusinessException(400, "Invalid batchId format, expected UUID");
+            Optional<ProductionBatch> batch = productionBatchRepository.findByBatchNo(batchId);
+            if (batch.isPresent()) {
+                parsedId = batch.get().getBatchId();
+            }
+        }
+
+        if (parsedId == null) {
+            return new GraphVisualizationResponse(List.of(), List.of());
         }
 
         // 先尝试用 batchId 作为 graphVersionId 查询
@@ -426,6 +438,115 @@ public class KgService {
     // ═══════════════════════════════════════════════════════
     // Neo4j Enrichment
     // ═══════════════════════════════════════════════════════
+
+    private GraphVisualizationResponse getGraphVisualizationFromNeo4j(String batchId) {
+        if (batchId == null || batchId.isBlank() || neo4jDriver == null) {
+            return new GraphVisualizationResponse(List.of(), List.of());
+        }
+
+        try (Session session = neo4jDriver.session()) {
+            Map<String, Object> params = Map.of("batchId", batchId);
+            String batchMatch = "(b) WHERE (b:ProductionBatch OR b:Batch) " +
+                    "AND (b.batchNo = $batchId OR b.batchId = $batchId)";
+
+            Result nodeResult = session.run(
+                    "MATCH " + batchMatch + " MATCH p=(b)-[*0..4]-(n) " +
+                            "UNWIND nodes(p) AS node RETURN DISTINCT node LIMIT 300",
+                    params);
+
+            Map<String, GraphVisualizationNode> nodes = new LinkedHashMap<>();
+            while (nodeResult.hasNext()) {
+                Node node = nodeResult.next().get("node").asNode();
+                GraphVisualizationNode dto = toNeo4jVisualizationNode(node);
+                nodes.put(dto.graphId(), dto);
+            }
+
+            Result edgeResult = session.run(
+                    "MATCH " + batchMatch + " MATCH p=(b)-[*1..4]-(n) " +
+                            "UNWIND relationships(p) AS rel " +
+                            "RETURN DISTINCT rel, startNode(rel) AS source, endNode(rel) AS target LIMIT 600",
+                    params);
+
+            List<GraphVisualizationEdge> edges = new ArrayList<>();
+            while (edgeResult.hasNext()) {
+                Record record = edgeResult.next();
+                Relationship rel = record.get("rel").asRelationship();
+                Node source = record.get("source").asNode();
+                Node target = record.get("target").asNode();
+                double weight = rel.containsKey("weight") && !rel.get("weight").isNull()
+                        ? rel.get("weight").asDouble()
+                        : 1.0;
+                edges.add(new GraphVisualizationEdge(
+                        neo4jNodeGraphId(source),
+                        neo4jNodeGraphId(target),
+                        rel.type(),
+                        weight));
+            }
+
+            return new GraphVisualizationResponse(new ArrayList<>(nodes.values()), edges);
+        } catch (Exception e) {
+            log.warn("Neo4j visualization query failed for batchId={}, falling back to PostgreSQL KG data: {}", batchId, e.getMessage());
+            return new GraphVisualizationResponse(List.of(), List.of());
+        }
+    }
+
+    private GraphVisualizationNode toNeo4jVisualizationNode(Node node) {
+        String label = node.labels().iterator().hasNext() ? node.labels().iterator().next() : "Unknown";
+        Map<String, Object> props = new LinkedHashMap<>();
+        node.keys().forEach(key -> props.put(key, node.get(key).asObject()));
+        props.put("entityType", label);
+
+        String name = firstStringProperty(node,
+                "name", "batchNo", "stepName", "stationName", "equipmentName", "productName",
+                "paramName", "defectName", "inspectionType", "runNo", "serialNo");
+        if (name == null || name.isBlank()) {
+            name = label + "-" + neo4jNodeGraphId(node);
+        }
+
+        return new GraphVisualizationNode(neo4jNodeGraphId(node), label, name, props);
+    }
+
+    private String firstStringProperty(Node node, String... keys) {
+        for (String key : keys) {
+            if (node.containsKey(key) && !node.get(key).isNull()) {
+                String value = node.get(key).asObject().toString();
+                if (!value.isBlank()) {
+                    return value;
+                }
+            }
+        }
+        return null;
+    }
+
+    private String neo4jNodeGraphId(Node node) {
+        String label = node.labels().iterator().hasNext() ? node.labels().iterator().next() : "Node";
+        String[] keyCandidates = neo4jKeyCandidates(label);
+        for (String key : keyCandidates) {
+            if (node.containsKey(key) && !node.get(key).isNull()) {
+                return label + ":" + node.get(key).asObject();
+            }
+        }
+        return label + ":" + node.id();
+    }
+
+    private String[] neo4jKeyCandidates(String label) {
+        return switch (label) {
+            case "ProductionBatch", "Batch" -> new String[]{"batchId", "batchNo"};
+            case "ProductUnit" -> new String[]{"unitId", "serialNo", "batchId"};
+            case "ProcessRun" -> new String[]{"runId", "runNo", "batchId"};
+            case "ParameterValue" -> new String[]{"valueId", "runId", "paramId", "batchId"};
+            case "InspectionTask" -> new String[]{"inspectionId", "runId", "batchId"};
+            case "DefectRecord" -> new String[]{"defectId", "inspectionId", "defectTypeId", "batchId"};
+            case "QualityMeasurement" -> new String[]{"measurementId", "inspectionId", "metricId", "batchId"};
+            case "ProcessStep" -> new String[]{"stepId", "stepCode"};
+            case "Workstation" -> new String[]{"stationId", "stationCode"};
+            case "Equipment" -> new String[]{"equipmentId", "equipmentCode"};
+            case "ProductType" -> new String[]{"productTypeId", "productCode"};
+            case "ParameterDef", "ProcessParameter" -> new String[]{"paramId", "paramCode", "name", "batchId"};
+            case "DefectType", "Defect" -> new String[]{"defectTypeId", "defectCode", "name", "batchId"};
+            default -> new String[]{"id", "uuid", "batchId"};
+        };
+    }
 
     private void enrichFromNeo4j(String batchId, List<KgEntity> entities, List<KgRelation> relations) {
         if (neo4jDriver == null) {

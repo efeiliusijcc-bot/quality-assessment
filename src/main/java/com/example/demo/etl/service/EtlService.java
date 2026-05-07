@@ -26,6 +26,7 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.data.domain.Sort;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
@@ -310,12 +311,14 @@ public class EtlService {
                                 break;
                             }
                             case "process_run": {
+                                UUID recipeId = existingUuid("prod.process_recipe", "recipe_id", cells.get("recipeid"));
+                                UUID operatorId = existingUuid("app.app_user", "user_id", cells.get("operatorid"));
                                 insertIgnoreDuplicate(
                                     "INSERT INTO prod.process_run (run_id, batch_id, unit_id, step_id, station_id, equipment_id, recipe_id, operator_id, run_no, start_time, end_time, run_status, created_at, context_json) " +
                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)",
                                     parseUUID(cells.get("runid")), parseUUID(cells.get("batchid")), parseUUID(cells.get("unitid")),
                                     parseUUID(cells.get("stepid")), parseUUID(cells.get("stationid")), parseUUID(cells.get("equipmentid")),
-                                    parseUUID(cells.get("recipeid")), parseUUID(cells.get("operatorid")), cells.get("runno"),
+                                    recipeId, operatorId, cells.get("runno"),
                                     parseTimestamp(cells.get("starttime")), parseTimestamp(cells.get("endtime")),
                                     coalesce(cells.get("runstatus"), "RUNNING"),                                    parseTimestampOrNow(cells.get("createdat")), "{}");
                                 totalRows++;
@@ -339,7 +342,21 @@ public class EtlService {
                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                                     parseUUID(cells.get("defecttypeid")), parseUUID(cells.get("stepid")),
                                     cells.get("defectcode"), cells.get("defectname"), cells.get("defectcategory"),
-                                    parseInt(cells.get("defaultseverity")), cells.get("description"), parseTimestampOrNow(cells.get("createdat")));
+                                    parseSeverityLevel(cells.get("defaultseverity")), cells.get("description"), parseTimestampOrNow(cells.get("createdat")));
+                                qualityDefectCount++;
+                                break;
+                            }
+                            case "quality_metric_def": {
+                                insertIgnoreDuplicate(
+                                    "INSERT INTO qc.quality_metric_def (metric_id, step_id, metric_code, metric_name, unit, lower_limit, upper_limit, target_value, pass_rule, severity_weight, description, created_at) " +
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    parseUUID(cells.get("metricid")), parseUUID(cells.get("stepid")),
+                                    cells.get("metriccode"), cells.get("metricname"), cells.get("unit"),
+                                    parseBigDecimal(cells.get("lowerlimit")), parseBigDecimal(cells.get("upperlimit")),
+                                    parseBigDecimal(cells.get("targetvalue")), cells.get("passrule"),
+                                    parseBigDecimal(cells.get("severityweight")), cells.get("description"),
+                                    parseTimestampOrNow(cells.get("createdat")));
+                                totalRows++;
                                 qualityDefectCount++;
                                 break;
                             }
@@ -356,22 +373,30 @@ public class EtlService {
                                 break;
                             }
                             case "defect_record":{
+                                UUID inspectionId = parseUUID(cells.get("inspectionid"));
+                                UUID unitId = existingUuid("prod.product_unit", "unit_id", cells.get("unitid"));
+                                if (unitId == null) {
+                                    unitId = lookupUuid(
+                                            "SELECT unit_id FROM qc.inspection_task WHERE inspection_id = ?",
+                                            inspectionId);
+                                }
                                 insertIgnoreDuplicate(
                                     "INSERT INTO qc.defect_record (defect_id, inspection_id, unit_id, defect_type_id, defect_count, confidence, severity_level, is_critical, created_at, bbox_json) " +
                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb)",
-                                    parseUUID(cells.get("defectid")), parseUUID(cells.get("inspectionid")), parseUUID(cells.get("unitid")),
+                                    parseUUID(cells.get("defectid")), inspectionId, unitId,
                                     parseUUID(cells.get("defecttypeid")), parseInt(cells.get("defectcount")),
-                                    parseBigDecimal(cells.get("confidence")), parseInt(cells.get("severitylevel")),
+                                    parseBigDecimal(cells.get("confidence")), parseSeverityLevel(cells.get("severitylevel")),
                                     parseBoolean(cells.get("iscritical")),                                    parseTimestampOrNow(cells.get("createdat")), "[]");
                                 totalRows++;
                                 qualityDefectCount++;
                                 break;
                             }
                             case "quality_measurement": {
+                                UUID unitId = existingUuid("prod.product_unit", "unit_id", cells.get("unitid"));
                                 insertIgnoreDuplicate(
                                     "INSERT INTO qc.quality_measurement (measurement_id, run_id, unit_id, metric_id, measured_at, value_num, is_pass, deviation_value, measurement_method, created_at) " +
                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    parseUUID(cells.get("measurementid")), parseUUID(cells.get("runid")), parseUUID(cells.get("unitid")),
+                                    parseUUID(cells.get("measurementid")), parseUUID(cells.get("runid")), unitId,
                                     parseUUID(cells.get("metricid")), parseTimestampOrNow(cells.get("measuredat")),
                                     parseBigDecimal(cells.get("valuenum")), parseBoolean(cells.get("ispass")),
                                     parseBigDecimal(cells.get("deviationvalue")), coalesce(cells.get("measurementmethod"), "自动检测"),
@@ -582,6 +607,20 @@ public class EtlService {
         catch (Exception e) { return null; }
     }
 
+    private Integer parseSeverityLevel(String val) {
+        Integer numeric = parseInt(val);
+        if (numeric != null) return numeric;
+        if (val == null || val.isBlank()) return null;
+
+        String normalized = val.trim().toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "critical", "severe", "high", "严重", "高", "重度" -> 3;
+            case "medium", "moderate", "中等", "中", "中度" -> 2;
+            case "low", "minor", "light", "轻微", "低", "轻度" -> 1;
+            default -> null;
+        };
+    }
+
     private BigDecimal parseBigDecimal(String val) {
         if (val == null || val.isBlank()) return null;
         try { return new BigDecimal(val); }
@@ -601,10 +640,32 @@ public class EtlService {
     private int insertIgnoreDuplicate(String sql, Object... args) {
         try {
             return jdbcTemplate.update(sql, args);
-        } catch (DataIntegrityViolationException e) {
-            log.warn("Skipping row due to data integrity violation: {}", e.getMessage());
+        } catch (DuplicateKeyException e) {
+            log.debug("Skipping duplicate row: {}", e.getMessage());
             return 0;
+        } catch (DataIntegrityViolationException e) {
+            throw e;
         }
+    }
+
+    private UUID existingUuid(String tableName, String columnName, String value) {
+        UUID id = parseUUID(value);
+        if (id == null) {
+            return null;
+        }
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM " + tableName + " WHERE " + columnName + " = ?",
+                Integer.class,
+                id);
+        return count != null && count > 0 ? id : null;
+    }
+
+    private UUID lookupUuid(String sql, UUID id) {
+        if (id == null) {
+            return null;
+        }
+        List<UUID> values = jdbcTemplate.query(sql, (rs, rowNum) -> (UUID) rs.getObject(1), id);
+        return values.isEmpty() ? null : values.get(0);
     }
 
     private java.time.LocalDate parseLocalDate(String val) {

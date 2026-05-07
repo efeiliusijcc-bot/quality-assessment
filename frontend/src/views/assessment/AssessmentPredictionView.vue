@@ -166,18 +166,19 @@
             </div>
           </div>
 
-          <div v-if="dashboard.graphReasoning.optimizationHints.length > 0" class="mt-4">
-            <div class="mb-2 text-sm text-slate-500">优化建议</div>
-            <div class="flex flex-wrap gap-2">
-              <el-tag
+          <div class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <div class="mb-3 text-sm font-medium text-amber-700">图谱优化依据 optimizationHints</div>
+            <div v-if="uniqueOptimizationHints.length > 0" class="grid gap-2">
+              <div
                 v-for="(hint, index) in uniqueOptimizationHints"
                 :key="`${index}-${hint}`"
-                type="warning"
-                effect="plain"
-                round
+                class="rounded-xl border border-amber-100 bg-white/70 px-3 py-2 text-sm leading-6 text-amber-950"
               >
-                {{ hint }}
-              </el-tag>
+                {{ index + 1 }}. {{ hint }}
+              </div>
+            </div>
+            <div v-else class="text-sm text-amber-700">
+              暂无图谱优化建议。
             </div>
           </div>
 

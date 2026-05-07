@@ -7,6 +7,14 @@ export interface StoredUserProfile {
   role: 'admin' | 'engineer' | 'operator';
 }
 
+const normalizeRole = (role: unknown): StoredUserProfile['role'] => {
+  const normalized = String(role ?? '').toLowerCase();
+  if (normalized === 'admin' || normalized === 'engineer' || normalized === 'operator') {
+    return normalized;
+  }
+  return 'operator';
+};
+
 export const getAccessToken = () => localStorage.getItem(TOKEN_KEY) ?? '';
 
 export const setAccessToken = (token: string) => {
@@ -24,7 +32,11 @@ export const getStoredProfile = (): StoredUserProfile | null => {
   }
 
   try {
-    return JSON.parse(raw) as StoredUserProfile;
+    const parsed = JSON.parse(raw) as StoredUserProfile;
+    return {
+      ...parsed,
+      role: normalizeRole(parsed.role),
+    };
   } catch {
     localStorage.removeItem(PROFILE_KEY);
     return null;

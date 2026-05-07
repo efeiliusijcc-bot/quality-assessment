@@ -1,6 +1,8 @@
 package com.example.demo.kg.controller;
 
 import com.example.demo.common.api.ApiResponse;
+import com.example.demo.eval.dto.EvalDtos.GraphReasoning;
+import com.example.demo.eval.service.GraphReasoningService;
 import com.example.demo.kg.dto.KgDtos.CreateGatAnalysisTaskRequest;
 import com.example.demo.kg.dto.KgDtos.CreateGraphVersionRequest;
 import com.example.demo.kg.dto.KgDtos.CreateKgEntityRequest;
@@ -14,6 +16,7 @@ import com.example.demo.kg.dto.KgDtos.KgEntityResponse;
 import com.example.demo.kg.dto.KgDtos.KgRelationResponse;
 import com.example.demo.kg.service.KgService;
 import com.example.demo.kg.service.Neo4jSyncService;
+import com.example.demo.kg.service.Neo4jSyncService.GraphSyncTaskStatus;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.Map;
@@ -32,10 +35,14 @@ public class KgController {
 
     private final KgService kgService;
     private final Neo4jSyncService neo4jSyncService;
+    private final GraphReasoningService graphReasoningService;
 
-    public KgController(KgService kgService, Neo4jSyncService neo4jSyncService) {
+    public KgController(KgService kgService,
+                        Neo4jSyncService neo4jSyncService,
+                        GraphReasoningService graphReasoningService) {
         this.kgService = kgService;
         this.neo4jSyncService = neo4jSyncService;
+        this.graphReasoningService = graphReasoningService;
     }
 
     // ─── Neo4j Sync ───
@@ -47,6 +54,16 @@ public class KgController {
         } catch (Exception e) {
             return ApiResponse.failure(500, "Neo4j sync failed: " + e.getMessage());
         }
+    }
+
+    @GetMapping("/graph/sync/tasks")
+    public ApiResponse<List<GraphSyncTaskStatus>> listSyncTasks() {
+        return ApiResponse.success(neo4jSyncService.listBatchSyncTasks());
+    }
+
+    @PostMapping("/graph/sync/{batchId}/retry")
+    public ApiResponse<GraphSyncTaskStatus> retryBatchSync(@PathVariable String batchId) {
+        return ApiResponse.success(neo4jSyncService.retryBatch(batchId));
     }
 
     // ─── GAT Optimization ───
@@ -61,6 +78,11 @@ public class KgController {
     @GetMapping("/graph/visualization/{batchId}")
     public ApiResponse<GraphVisualizationResponse> getGraphVisualization(@PathVariable String batchId) {
         return ApiResponse.success(kgService.getGraphVisualization(batchId));
+    }
+
+    @GetMapping("/graph/reasoning/{batchId}")
+    public ApiResponse<GraphReasoning> getGraphReasoning(@PathVariable String batchId) {
+        return ApiResponse.success(graphReasoningService.evaluateBatch(batchId));
     }
 
     // ─── GraphVersion ───
@@ -133,5 +155,20 @@ public class KgController {
     @GetMapping("/graph/gat-tasks/{id}/weights")
     public ApiResponse<List<GatRelationWeightResponse>> listWeightsByTask(@PathVariable UUID id) {
         return ApiResponse.success(kgService.listWeightsByTask(id));
+    }
+
+    // ─── Graph Stats ───
+
+    @GetMapping("/graph/stats")
+    public ApiResponse<Map<String, Object>> getGraphStats() {
+        try {
+            Map<String, Object> stats = new java.util.HashMap<>();
+            stats.put("entityCount", kgService.listAllEntities().size());
+            stats.put("relationCount", kgService.listAllRelations().size());
+            stats.put("versionCount", kgService.listVersions().size());
+            return ApiResponse.success(stats);
+        } catch (Exception e) {
+            return ApiResponse.failure(500, "Failed to get graph stats: " + e.getMessage());
+        }
     }
 }

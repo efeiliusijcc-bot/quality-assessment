@@ -134,7 +134,7 @@
 
           <div class="mt-5 grid gap-4 md:grid-cols-2">
             <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">主要缺陷</div>
+              <div class="text-sm text-slate-500">主要缺陷 mainDefect</div>
               <div class="mt-2 text-xl font-semibold text-slate-900">{{ dashboard.graphReasoning?.mainDefect || '暂无' }}</div>
             </div>
             <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">

@@ -6,6 +6,7 @@ import com.example.demo.qc.service.QcService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,18 @@ class QcServiceTest {
 
     @Autowired
     private QcService qcService;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @org.junit.jupiter.api.BeforeEach
+    void cleanQcTables() {
+        jdbcTemplate.update("DELETE FROM qc.defect_record");
+        jdbcTemplate.update("DELETE FROM qc.quality_measurement");
+        jdbcTemplate.update("DELETE FROM qc.inspection_task");
+        jdbcTemplate.update("DELETE FROM qc.defect_type");
+        jdbcTemplate.update("DELETE FROM qc.quality_metric_def");
+    }
 
     @Test
     void testCreateMetricDef() {

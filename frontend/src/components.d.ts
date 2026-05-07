@@ -15,6 +15,7 @@ declare module 'vue' {
     AppSidebar: typeof import('./components/layout/AppSidebar.vue')['default']
     BaseChart: typeof import('./components/charts/BaseChart.vue')['default']
     DefectViewer: typeof import('./components/defect/DefectViewer.vue')['default']
+    ElAlert: typeof import('element-plus/es')['ElAlert']
     ElBreadcrumb: typeof import('element-plus/es')['ElBreadcrumb']
     ElBreadcrumbItem: typeof import('element-plus/es')['ElBreadcrumbItem']
     ElButton: typeof import('element-plus/es')['ElButton']

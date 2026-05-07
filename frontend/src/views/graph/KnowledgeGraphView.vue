@@ -2,19 +2,18 @@
   <div class="space-y-6">
     <PageIntroCard
       title="知识图谱可视化"
-      description="基于 Neo4j 构建的电子元器件装配质量知识图谱，支持节点探索、关系查询与 GAT 注意力权重分析。"
+      description="按生产批次查看 PostgreSQL 同步到 Neo4j 后形成的工序、设备、参数、检测与缺陷关联网络。"
       badge="KNOWLEDGE GRAPH"
       :metrics="metrics"
     />
 
-    <!-- 控制栏 -->
     <section class="content-card p-6">
-      <div class="grid gap-4 md:grid-cols-[1fr_1fr_auto_auto]">
+      <div class="grid gap-4 lg:grid-cols-[1fr_auto_auto]">
         <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div class="text-sm text-slate-500">选择批次</div>
+          <div class="text-sm text-slate-500">选择生产批次</div>
           <el-select
             v-model="selectedBatchId"
-            placeholder="请输入或选择批次号"
+            placeholder="请选择已同步的生产批次"
             class="mt-2 w-full"
             filterable
             clearable
@@ -29,75 +28,62 @@
           </el-select>
         </div>
 
-        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <div class="text-sm text-slate-500">图谱版本</div>
-          <el-select
-            v-model="selectedVersionId"
-            placeholder="全部版本"
-            class="mt-2 w-full"
-            clearable
-            @change="loadGraphData"
-          >
-            <el-option
-              v-for="v in graphVersions"
-              :key="v.id"
-              :label="v.description"
-              :value="v.id"
-            />
-          </el-select>
+        <div class="flex items-end">
+          <el-button type="primary" :loading="loading" :disabled="!selectedBatchId" @click="loadGraphData">
+            <el-icon class="mr-1"><Refresh /></el-icon>
+            加载图谱
+          </el-button>
         </div>
 
         <div class="flex items-end">
-          <el-button type="primary" :loading="gatLoading" :disabled="!selectedBatchId" @click="onRunGat">
+          <el-button :loading="gatLoading" :disabled="!canRunGat" @click="onRunGat">
             <el-icon class="mr-1"><MagicStick /></el-icon>
             GAT 分析
           </el-button>
         </div>
-
-        <div class="flex items-end">
-          <el-button :loading="loading" @click="loadGraphData">
-            <el-icon class="mr-1"><Refresh /></el-icon>
-            刷新
-          </el-button>
-        </div>
       </div>
+
+      <el-alert
+        v-if="selectedBatchId && !canRunGat"
+        class="mt-4"
+        type="info"
+        show-icon
+        :closable="false"
+        title="当前可视化按业务批次号查询；GAT 接口仍预留给图谱版本 UUID，暂不作为一期测试重点。"
+      />
     </section>
 
-    <!-- 主内容区：图谱 + 侧栏 -->
-    <section class="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
-      <!-- 图谱画布 -->
+    <section class="grid gap-6 xl:grid-cols-[1.35fr_0.65fr]">
       <div class="content-card p-8">
-        <div class="flex items-center justify-between gap-4">
+        <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 class="panel-title">图谱网络</h2>
-            <p class="panel-subtitle">力导向布局展示实体节点与关系连线，支持拖拽与缩放。</p>
+            <p class="panel-subtitle">节点可拖拽，支持缩放。连线表示批次、工序、参数、检测与缺陷之间的关系。</p>
           </div>
           <div class="flex items-center gap-3">
             <el-tag type="info" effect="dark" round>节点 {{ graphData.nodes.length }}</el-tag>
-            <el-tag type="info" effect="dark" round>关系 {{ graphData.edges.length }}</el-tag>
+            <el-tag type="success" effect="dark" round>关系 {{ graphData.edges.length }}</el-tag>
           </div>
         </div>
 
-        <div class="mt-6 h-[520px] rounded-[28px] border border-slate-200 bg-slate-950 p-5">
+        <div class="mt-6 h-[560px] rounded-[28px] border border-slate-200 bg-slate-950 p-5">
           <div v-if="graphData.nodes.length > 0" class="h-full w-full">
             <GraphVisualization :nodes="graphData.nodes" :edges="graphData.edges" />
           </div>
           <div v-else class="flex h-full flex-col items-center justify-center text-slate-400">
             <el-icon :size="48" class="text-cyan-300"><Connection /></el-icon>
             <div class="mt-4 text-lg font-semibold">暂无图谱数据</div>
-            <div class="mt-2 text-sm">选择批次后加载知识图谱</div>
+            <div class="mt-2 text-sm">请选择已同步成功的批次，或先执行知识图谱同步。</div>
           </div>
         </div>
       </div>
 
-      <!-- 右侧面板 -->
       <div class="space-y-6">
-        <!-- 图谱统计 -->
         <section class="content-card p-8">
           <h2 class="panel-title">图谱统计</h2>
-          <p class="panel-subtitle">当前图谱的实体与关系概览。</p>
+          <p class="panel-subtitle">当前批次子图的实体与关系概览。</p>
 
-          <div class="mt-6 grid gap-4 md:grid-cols-2">
+          <div class="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-1">
             <div
               v-for="item in statsCards"
               :key="item.label"
@@ -109,66 +95,48 @@
           </div>
         </section>
 
-        <!-- GAT 分析结果 -->
-        <section class="content-card p-8">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <h2 class="panel-title">GAT 注意力分析</h2>
-              <p class="panel-subtitle">图注意力网络权重排序。</p>
-            </div>
-            <el-tag v-if="gatResult" :type="gatResult.edgeCount > 50 ? 'danger' : 'success'" effect="dark" round>
-              边权重 {{ gatResult.edgeCount }}
-            </el-tag>
-          </div>
-
-          <div v-if="gatResult" class="mt-6 space-y-4">
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">分析摘要</div>
-              <div class="mt-2 text-sm leading-6 text-slate-700">{{ gatResult.summary }}</div>
-            </div>
-
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm font-medium text-slate-500">注意力 Top 关系</div>
-              <div class="mt-4 space-y-3">
-                <div
-                  v-for="(edge, idx) in topAttentionEdges"
-                  :key="idx"
-                  class="flex items-center gap-3 rounded-xl border border-slate-100 bg-white p-3"
-                >
-                  <div class="text-sm font-medium text-slate-700">{{ edge.from }}</div>
-                  <el-icon class="text-slate-400"><Right /></el-icon>
-                  <div class="text-sm font-medium text-slate-700">{{ edge.to }}</div>
-                  <div class="ml-auto">
-                    <el-tag size="small" :type="edge.attentionWeight > 0.7 ? 'danger' : 'info'" round>
-                      {{ (edge.attentionWeight * 100).toFixed(1) }}%
-                    </el-tag>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div v-else class="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-400">
-            点击「GAT 分析」按钮运行图注意力网络
-          </div>
-        </section>
-
-        <!-- 实体列表 -->
         <section class="content-card p-8">
           <h2 class="panel-title">实体列表</h2>
-          <p class="panel-subtitle">当前图谱中的节点实体。</p>
+          <p class="panel-subtitle">当前展示的前 80 个节点。</p>
 
           <div class="mt-6 overflow-hidden rounded-[16px] border border-slate-200">
-            <el-table :data="entityTable" stripe max-height="300" size="small">
-              <el-table-column prop="name" label="名称" min-width="120" />
-              <el-table-column prop="label" label="类型" min-width="100">
+            <el-table :data="entityTable" stripe max-height="360" size="small">
+              <el-table-column prop="name" label="名称" min-width="150" show-overflow-tooltip />
+              <el-table-column prop="label" label="类型" min-width="120">
                 <template #default="{ row }">
                   <el-tag size="small" :color="labelColorMap[row.label] || '#94a3b8'" effect="dark" round style="border:none">
-                    {{ row.label }}
+                    {{ displayLabel(row.label) }}
                   </el-tag>
                 </template>
               </el-table-column>
             </el-table>
+          </div>
+        </section>
+
+        <section class="content-card p-8">
+          <h2 class="panel-title">GAT 分析</h2>
+          <p class="panel-subtitle">预留的图注意力分析能力，当前不影响图谱可视化主流程。</p>
+
+          <div v-if="gatResult" class="mt-6 space-y-4">
+            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+              {{ gatResult.summary }}
+            </div>
+            <div
+              v-for="(edge, idx) in topAttentionEdges"
+              :key="idx"
+              class="flex items-center gap-3 rounded-xl border border-slate-100 bg-white p-3"
+            >
+              <span class="truncate text-sm font-medium text-slate-700">{{ edge.from }}</span>
+              <el-icon class="text-slate-400"><Right /></el-icon>
+              <span class="truncate text-sm font-medium text-slate-700">{{ edge.to }}</span>
+              <el-tag class="ml-auto" size="small" :type="edge.attentionWeight > 0.7 ? 'danger' : 'info'" round>
+                {{ (edge.attentionWeight * 100).toFixed(1) }}%
+              </el-tag>
+            </div>
+          </div>
+
+          <div v-else class="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-400">
+            先完成批次图谱可视化；GAT 后续可接入模型训练和注意力权重展示。
           </div>
         </section>
       </div>
@@ -178,64 +146,89 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import { Connection, MagicStick, Refresh, Right } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 
-import PageIntroCard from '@/components/dashboard/PageIntroCard.vue';
-import GraphVisualization from '@/components/charts/GraphVisualization.vue';
+import { fetchBatches } from '@/api/assessment';
 import {
   fetchGraphVisualization,
   runGatOptimization,
-  type GraphVisualizationNode,
-  type GraphVisualizationEdge,
   type GatOptimizationResponse,
-  type GatAttentionEdge,
+  type GraphVisualizationEdge,
+  type GraphVisualizationNode,
 } from '@/api/graph';
-import { fetchBatches } from '@/api/assessment';
-
-// ─── State ───
+import GraphVisualization from '@/components/charts/GraphVisualization.vue';
+import PageIntroCard from '@/components/dashboard/PageIntroCard.vue';
 
 const selectedBatchId = ref('');
-const selectedVersionId = ref('');
+const route = useRoute();
 const availableBatches = ref<string[]>([]);
-const graphVersions = ref<Array<{ id: string; description: string }>>([]);
-
 const loading = ref(false);
 const gatLoading = ref(false);
-
 const graphData = ref<{ nodes: GraphVisualizationNode[]; edges: GraphVisualizationEdge[] }>({
   nodes: [],
   edges: [],
 });
-
 const gatResult = ref<GatOptimizationResponse | null>(null);
 
 const labelColorMap: Record<string, string> = {
   Batch: '#3b82f6',
+  ProductionBatch: '#3b82f6',
   ProcessStep: '#8b5cf6',
   ProcessParameter: '#10b981',
+  ParameterDef: '#10b981',
+  ParameterValue: '#22c55e',
   QualityParameter: '#f59e0b',
+  QualityMeasurement: '#f59e0b',
   Defect: '#ef4444',
+  DefectType: '#ef4444',
+  DefectRecord: '#f97316',
+  InspectionTask: '#06b6d4',
+  ProductUnit: '#6366f1',
+  ProcessRun: '#a855f7',
+  Equipment: '#64748b',
+  Workstation: '#14b8a6',
 };
 
-// ─── Metrics ───
+const labelNameMap: Record<string, string> = {
+  Batch: '批次',
+  ProductionBatch: '生产批次',
+  ProcessStep: '工序',
+  ProcessParameter: '工艺参数',
+  ParameterDef: '参数定义',
+  ParameterValue: '参数值',
+  QualityParameter: '质量参数',
+  QualityMeasurement: '质量测量',
+  Defect: '缺陷',
+  DefectType: '缺陷类型',
+  DefectRecord: '缺陷记录',
+  InspectionTask: '检测任务',
+  ProductUnit: '产品单元',
+  ProcessRun: '生产运行',
+  Equipment: '设备',
+  Workstation: '工位',
+};
+
+const canRunGat = computed(() =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(selectedBatchId.value),
+);
 
 const metrics = computed(() => [
-  { label: '节点总数', value: String(graphData.value.nodes.length), extra: 'Neo4j 实体' },
-  { label: '关系总数', value: String(graphData.value.edges.length), extra: '图谱边' },
-  { label: '实体类型', value: String(new Set(graphData.value.nodes.map(n => n.label)).size), extra: '分类统计' },
+  { label: '节点总数', value: String(graphData.value.nodes.length), extra: '当前批次子图' },
+  { label: '关系总数', value: String(graphData.value.edges.length), extra: '关系连线数量' },
+  { label: '实体类型', value: String(new Set(graphData.value.nodes.map((n) => n.label)).size), extra: '节点分类数量' },
 ]);
 
 const statsCards = computed(() => {
   const nodes = graphData.value.nodes;
-  const edges = graphData.value.edges;
-  const labels = [...new Set(nodes.map(n => n.label))];
+  const labels = [...new Set(nodes.map((n) => n.label))];
   return [
     { label: '实体节点', value: nodes.length },
-    { label: '关系边', value: edges.length },
-    ...labels.slice(0, 4).map(l => ({
-      label: l,
-      value: nodes.filter(n => n.label === l).length,
+    { label: '关系边', value: graphData.value.edges.length },
+    ...labels.slice(0, 6).map((label) => ({
+      label: displayLabel(label),
+      value: nodes.filter((node) => node.label === label).length,
     })),
   ];
 });
@@ -248,17 +241,17 @@ const topAttentionEdges = computed(() => {
 });
 
 const entityTable = computed(() =>
-  graphData.value.nodes.slice(0, 50).map(n => ({
-    name: n.name || n.graphId,
-    label: n.label,
+  graphData.value.nodes.slice(0, 80).map((node) => ({
+    name: node.name || node.graphId,
+    label: node.label,
   })),
 );
 
-// ─── Actions ───
+const displayLabel = (label: string) => labelNameMap[label] || label;
 
 const onBatchChange = () => {
   gatResult.value = null;
-  loadGraphData();
+  void loadGraphData();
 };
 
 const loadGraphData = async () => {
@@ -270,9 +263,16 @@ const loadGraphData = async () => {
   loading.value = true;
   try {
     const result = await fetchGraphVisualization(selectedBatchId.value);
-    graphData.value = { nodes: result.nodes, edges: result.edges };
-  } catch (e: any) {
-    ElMessage.error('加载图谱数据失败: ' + (e.message || '未知错误'));
+    graphData.value = {
+      nodes: result.nodes ?? [],
+      edges: result.edges ?? [],
+    };
+    if (graphData.value.nodes.length === 0) {
+      ElMessage.info('该批次暂无图谱数据，请先执行知识图谱同步。');
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String((error as { message?: string })?.message ?? '未知错误');
+    ElMessage.error(`加载图谱失败：${message}`);
     graphData.value = { nodes: [], edges: [] };
   } finally {
     loading.value = false;
@@ -280,28 +280,34 @@ const loadGraphData = async () => {
 };
 
 const onRunGat = async () => {
-  if (!selectedBatchId.value) {
-    ElMessage.warning('请先选择批次');
+  if (!canRunGat.value) {
+    ElMessage.warning('GAT 分析当前需要图谱版本 UUID。');
     return;
   }
 
   gatLoading.value = true;
   try {
-    const result = await runGatOptimization(selectedBatchId.value);
-    gatResult.value = result;
+    gatResult.value = await runGatOptimization(selectedBatchId.value);
     ElMessage.success('GAT 分析完成');
-  } catch (e: any) {
-    ElMessage.error('GAT 分析失败: ' + (e.message || '未知错误'));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String((error as { message?: string })?.message ?? '未知错误');
+    ElMessage.error(`GAT 分析失败：${message}`);
   } finally {
     gatLoading.value = false;
   }
 };
 
-// ─── Init ───
-
 onMounted(async () => {
   try {
     availableBatches.value = await fetchBatches();
+    const queryBatchId = typeof route.query.batchId === 'string' ? route.query.batchId : '';
+    if (queryBatchId) {
+      selectedBatchId.value = queryBatchId;
+      await loadGraphData();
+    } else if (availableBatches.value.length > 0) {
+      selectedBatchId.value = availableBatches.value[0]!;
+      await loadGraphData();
+    }
   } catch {
     availableBatches.value = [];
   }

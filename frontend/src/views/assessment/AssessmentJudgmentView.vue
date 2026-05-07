@@ -130,6 +130,17 @@
               <div class="mt-1 text-sm text-slate-700">{{ defectChainLabel }}</div>
             </div>
           </div>
+
+          <div class="mt-4 grid gap-4 md:grid-cols-2">
+            <div class="rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
+              <div class="text-sm text-cyan-700">参数异常链 parameterChain</div>
+              <div class="mt-2 text-sm font-semibold leading-7 text-cyan-950">{{ parameterChainLabel }}</div>
+            </div>
+            <div class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
+              <div class="text-sm text-indigo-700">工序诊断链 stepChain</div>
+              <div class="mt-2 text-sm font-semibold leading-7 text-indigo-950">{{ stepChainLabel }}</div>
+            </div>
+          </div>
         </section>
       </div>
     </section>
@@ -257,6 +268,16 @@ const graphEdges = ref<GraphVisualizationEdge[]>([]);
 const defectChainLabel = computed(() => {
   const items = dashboard.value.graphReasoning?.defectChain ?? [];
   return items.length > 0 ? items.join(' -> ') : '暂无';
+});
+
+const parameterChainLabel = computed(() => {
+  const items = dashboard.value.graphReasoning?.parameterChain ?? [];
+  return items.length > 0 ? items.join(' -> ') : '暂无参数异常链';
+});
+
+const stepChainLabel = computed(() => {
+  const items = dashboard.value.graphReasoning?.stepChain ?? [];
+  return items.length > 0 ? items.join(' -> ') : '暂无工序诊断链';
 });
 
 const loadHistory = async () => {

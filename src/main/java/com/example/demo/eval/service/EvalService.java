@@ -40,6 +40,7 @@ public class EvalService {
     private final ProductionBatchRepository batchRepo;
     private final ProcessRunRepository processRunRepo;
     private final ParameterValueRepository parameterValueRepo;
+    private final GraphReasoningService graphReasoningService;
 
     public EvalService(AssessmentTaskRepository assessmentTaskRepo,
                        AssessmentResultRepository assessmentResultRepo,
@@ -48,7 +49,8 @@ public class EvalService {
                        WorkstationRepository workstationRepo,
                        ProductionBatchRepository batchRepo,
                        ProcessRunRepository processRunRepo,
-                       ParameterValueRepository parameterValueRepo) {
+                       ParameterValueRepository parameterValueRepo,
+                       GraphReasoningService graphReasoningService) {
         this.assessmentTaskRepo = assessmentTaskRepo;
         this.assessmentResultRepo = assessmentResultRepo;
         this.optimizationTaskRepo = optimizationTaskRepo;
@@ -57,6 +59,7 @@ public class EvalService {
         this.batchRepo = batchRepo;
         this.processRunRepo = processRunRepo;
         this.parameterValueRepo = parameterValueRepo;
+        this.graphReasoningService = graphReasoningService;
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -116,9 +119,10 @@ public class EvalService {
     //  Dashboard – Qualified
     // ════════════════════════════════════════════════════════════════
 
-    public QualifiedDashboardData getQualifiedDashboard(UUID batchId) {
+    public QualifiedDashboardData getQualifiedDashboard(String batchNoOrId) {
         List<IntroMetric> metrics = buildDefaultMetrics("qualified");
-        GraphReasoning reasoning = defaultGraphReasoning();
+        GraphReasoning reasoning = resolveGraphReasoning(batchNoOrId);
+        UUID batchId = resolveBatchUuid(batchNoOrId);
 
         if (batchId != null) {
             List<ProcessRun> runs = processRunRepo.findByBatchIdOrderByCreatedAtAsc(batchId);
@@ -143,9 +147,9 @@ public class EvalService {
     //  Dashboard – Judgment
     // ════════════════════════════════════════════════════════════════
 
-    public JudgmentDashboardData getJudgmentDashboard(UUID batchId) {
+    public JudgmentDashboardData getJudgmentDashboard(String batchNoOrId) {
         List<IntroMetric> metrics = buildDefaultMetrics("judgment");
-        GraphReasoning reasoning = defaultGraphReasoning();
+        GraphReasoning reasoning = resolveGraphReasoning(batchNoOrId);
 
         return new JudgmentDashboardData(
             metrics,
@@ -167,9 +171,9 @@ public class EvalService {
     //  Dashboard – Prediction
     // ════════════════════════════════════════════════════════════════
 
-    public PredictionDashboardData getPredictionDashboard(UUID batchId) {
+    public PredictionDashboardData getPredictionDashboard(String batchNoOrId) {
         List<IntroMetric> metrics = buildDefaultMetrics("prediction");
-        GraphReasoning reasoning = defaultGraphReasoning();
+        GraphReasoning reasoning = resolveGraphReasoning(batchNoOrId);
 
         return new PredictionDashboardData(
             metrics,
@@ -512,6 +516,32 @@ public class EvalService {
             List.of(),
             new ReasoningStatistics(0, 0, 0, 0, 0, 0)
         );
+    }
+
+    private GraphReasoning resolveGraphReasoning(String batchNoOrId) {
+        if (batchNoOrId == null || batchNoOrId.isBlank()) {
+            return defaultGraphReasoning();
+        }
+        try {
+            return graphReasoningService.evaluateBatch(batchNoOrId);
+        } catch (Exception e) {
+            org.slf4j.LoggerFactory.getLogger(EvalService.class)
+                    .warn("Graph reasoning degraded for batchId={}: {}", batchNoOrId, e.getMessage());
+            return defaultGraphReasoning();
+        }
+    }
+
+    private UUID resolveBatchUuid(String batchNoOrId) {
+        if (batchNoOrId == null || batchNoOrId.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(batchNoOrId);
+        } catch (IllegalArgumentException ignored) {
+            return batchRepo.findByBatchNo(batchNoOrId)
+                    .map(ProductionBatch::getBatchId)
+                    .orElse(null);
+        }
     }
 
     private double extractDouble(List<ParameterValue> values, int index) {
