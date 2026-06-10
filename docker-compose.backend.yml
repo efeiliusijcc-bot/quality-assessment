@@ -1,0 +1,11 @@
+services:
+  backend:
+    image: quality-assessment-backend:latest
+    container_name: quality-assessment-backend
+    restart: unless-stopped
+    env_file:
+      - ./deploy/backend.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./logs:/app/logs

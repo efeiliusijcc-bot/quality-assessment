@@ -46,6 +46,7 @@ public class GatAnalysisTask {
         this.gatTaskId = UUID.randomUUID();
         this.graphVersionId = graphVersionId;
         this.modelName = "GAT";
+        this.inputScope = "{}";
         this.taskStatus = "CREATED";
         this.createdAt = Instant.now();
     }
@@ -58,6 +59,8 @@ public class GatAnalysisTask {
 
     public Instant getFinishedAt() { return finishedAt; }
     public void setModelName(String modelName) { this.modelName = modelName; }
+    public void setModelVersion(String modelVersion) { this.modelVersion = modelVersion; }
+    public void setInputScope(String inputScope) { this.inputScope = inputScope; }
     public void setTaskStatus(String taskStatus) { this.taskStatus = taskStatus; }
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
 }

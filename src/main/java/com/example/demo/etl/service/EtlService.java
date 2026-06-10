@@ -3,8 +3,10 @@ package com.example.demo.etl.service;
 import com.example.demo.common.exception.BusinessException;
 import com.example.demo.core.domain.ParameterDef;
 import com.example.demo.core.domain.ProcessStep;
+import com.example.demo.core.domain.Workstation;
 import com.example.demo.core.repository.ParameterDefRepository;
 import com.example.demo.core.repository.ProcessStepRepository;
+import com.example.demo.core.repository.WorkstationRepository;
 import com.example.demo.etl.domain.CleaningLog;
 import com.example.demo.etl.domain.CleaningRule;
 import com.example.demo.etl.domain.ImportJob;
@@ -20,8 +22,10 @@ import com.example.demo.prod.repository.ProcessRunRepository;
 import com.example.demo.prod.repository.ProductionBatchRepository;
 import com.example.demo.qc.domain.DefectRecord;
 import com.example.demo.qc.domain.DefectType;
+import com.example.demo.qc.domain.InspectionTask;
 import com.example.demo.qc.repository.DefectRecordRepository;
 import com.example.demo.qc.repository.DefectTypeRepository;
+import com.example.demo.qc.repository.InspectionTaskRepository;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.springframework.data.domain.Sort;
@@ -58,10 +62,12 @@ public class EtlService {
     private final CleaningLogRepository cleaningLogRepository;
     private final ProductionBatchRepository productionBatchRepository;
     private final ProcessStepRepository processStepRepository;
+    private final WorkstationRepository workstationRepository;
     private final ProcessRunRepository processRunRepository;
     private final ParameterDefRepository parameterDefRepository;
     private final ParameterValueRepository parameterValueRepository;
     private final DefectTypeRepository defectTypeRepository;
+    private final InspectionTaskRepository inspectionTaskRepository;
     private final DefectRecordRepository defectRecordRepository;
     private final JdbcTemplate jdbcTemplate;
 
@@ -71,10 +77,12 @@ public class EtlService {
             CleaningLogRepository cleaningLogRepository,
             ProductionBatchRepository productionBatchRepository,
             ProcessStepRepository processStepRepository,
+            WorkstationRepository workstationRepository,
             ProcessRunRepository processRunRepository,
             ParameterDefRepository parameterDefRepository,
             ParameterValueRepository parameterValueRepository,
             DefectTypeRepository defectTypeRepository,
+            InspectionTaskRepository inspectionTaskRepository,
             DefectRecordRepository defectRecordRepository,
             JdbcTemplate jdbcTemplate) {
         this.importJobRepository = importJobRepository;
@@ -82,10 +90,12 @@ public class EtlService {
         this.cleaningLogRepository = cleaningLogRepository;
         this.productionBatchRepository = productionBatchRepository;
         this.processStepRepository = processStepRepository;
+        this.workstationRepository = workstationRepository;
         this.processRunRepository = processRunRepository;
         this.parameterDefRepository = parameterDefRepository;
         this.parameterValueRepository = parameterValueRepository;
         this.defectTypeRepository = defectTypeRepository;
+        this.inspectionTaskRepository = inspectionTaskRepository;
         this.defectRecordRepository = defectRecordRepository;
         this.jdbcTemplate = jdbcTemplate;
     }
@@ -171,11 +181,32 @@ public class EtlService {
                 .map(this::toCleaningLogResponse).toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<CleaningLogResponse> listCleaningLogsByImportJob(UUID importId) {
+        ImportJob job = requireImportJob(importId);
+        Instant startedAt = job.getStartedAt();
+        Instant finishedAt = job.getFinishedAt() != null ? job.getFinishedAt() : Instant.now();
+
+        return cleaningLogRepository.findAll().stream()
+                .filter(log -> log.getCreatedAt() != null)
+                .filter(log -> !log.getCreatedAt().isBefore(startedAt) && !log.getCreatedAt().isAfter(finishedAt))
+                .map(this::toCleaningLogResponse)
+                .toList();
+    }
+
     // ===== Business Methods =====
 
     public OnlineUploadResult submitOnlineUpload(OnlineUploadPayload payload) {
+        validateOnlineUploadPayload(payload);
         ImportJob job = new ImportJob("ONLINE", payload.station());
-        job.setTargetTable("process_setting");
+        job.setTargetTable("online_stream");
+        job.setImportStatus("RUNNING");
+        job.setErrorLog(toJsonObject(new LinkedHashMap<>(Map.of(
+                "batchNo", payload.batchNo(),
+                "deviceId", payload.deviceId(),
+                "frequency", payload.frequency(),
+                "mapping", payload.mapping()
+        ))));
         importJobRepository.save(job);
         return new OnlineUploadResult(
                 job.getImportId().toString(),
@@ -192,15 +223,14 @@ public class EtlService {
         ProductionBatch batch = productionBatchRepository.findByBatchNo(payload.batchNo())
                 .orElseThrow(() -> new BusinessException(404, "batch not found: " + payload.batchNo()));
 
-        // Find a process step (use first available step as default)
-        List<ProcessStep> steps = processStepRepository.findAll();
-        if (steps.isEmpty()) {
-            throw new BusinessException(400, "no process step configured");
-        }
-        ProcessStep step = steps.get(0);
+        ProcessStep step = resolveManualRecordStep(payload.station());
+        Workstation station = resolveManualRecordStation(payload.station()).orElse(null);
 
         // Create process run
         ProcessRun run = new ProcessRun(batch.getBatchId(), step.getStepId());
+        if (station != null) {
+            run.setStationId(station.getStationId());
+        }
         run.setStartTime(Instant.now());
         run.setRunStatus("COMPLETED");
         processRunRepository.save(run);
@@ -229,18 +259,82 @@ public class EtlService {
         if (payload.defectType() != null && !payload.defectType().isBlank()) {
             defectTypeRepository.findByStepIdAndDefectCode(step.getStepId(), payload.defectType())
                     .ifPresent(defectType -> {
-                        DefectRecord dr = new DefectRecord(run.getRunId(), defectType.getDefectTypeId());
-                        if (payload.defectConfidence() > 0) {
-                            dr.setConfidence(BigDecimal.valueOf(payload.defectConfidence()));
-                        }
+                        BigDecimal confidence = BigDecimal.valueOf(Math.max(0, Math.min(1, payload.defectConfidence())));
+                        InspectionTask inspection = new InspectionTask(run.getRunId(), step.getStepId(), "MANUAL");
+                        inspection.setResultStatus("COMPLETED");
+                        inspection.setConfidence(confidence);
+                        inspectionTaskRepository.save(inspection);
+
+                        DefectRecord dr = new DefectRecord(inspection.getInspectionId(), defectType.getDefectTypeId());
+                        dr.setConfidence(confidence);
+                        dr.setSeverityLevel(resolveManualDefectSeverity(payload.defectLevel(), defectType));
                         defectRecordRepository.save(dr);
                     });
         }
 
         return new ManualRecordResult(
                 run.getRunId().toString(),
-                "Manual record submitted successfully"
+                "逐条录入已提交"
         );
+    }
+
+    private void validateOnlineUploadPayload(OnlineUploadPayload payload) {
+        if (payload == null
+                || isBlank(payload.station())
+                || isBlank(payload.batchNo())
+                || isBlank(payload.deviceId())
+                || isBlank(payload.frequency())
+                || isBlank(payload.mapping())) {
+            throw new BusinessException(400, "online upload fields are required");
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    private ProcessStep resolveManualRecordStep(String stationValue) {
+        Optional<Workstation> station = resolveManualRecordStation(stationValue);
+        if (station.isPresent()) {
+            return processStepRepository.findById(station.get().getStepId())
+                    .orElseThrow(() -> new BusinessException(404, "process step not found for station: " + stationValue));
+        }
+
+        List<ProcessStep> steps = processStepRepository.findAll(Sort.by(Sort.Direction.ASC, "stepOrder"));
+        if (steps.isEmpty()) {
+            throw new BusinessException(400, "no process step configured");
+        }
+        return steps.get(0);
+    }
+
+    private Optional<Workstation> resolveManualRecordStation(String stationValue) {
+        if (stationValue == null || stationValue.isBlank()) {
+            return Optional.empty();
+        }
+        Optional<Workstation> byCode = workstationRepository.findByStationCode(stationValue);
+        if (byCode.isPresent()) {
+            return byCode;
+        }
+        String normalized = stationValue.trim();
+        return workstationRepository.findAll().stream()
+                .filter(station -> normalized.equals(station.getStationName()))
+                .findFirst();
+    }
+
+    private int resolveManualDefectSeverity(String defectLevel, DefectType defectType) {
+        if (defectLevel != null) {
+            String normalized = defectLevel.trim().toLowerCase(Locale.ROOT);
+            if (normalized.contains("严重") || normalized.contains("high") || normalized.contains("critical")) {
+                return 4;
+            }
+            if (normalized.contains("中") || normalized.contains("medium")) {
+                return 3;
+            }
+            if (normalized.contains("轻") || normalized.contains("low")) {
+                return 2;
+            }
+        }
+        return defectType.getDefaultSeverity() != null ? defectType.getDefaultSeverity() : 1;
     }
 
     @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -260,6 +354,7 @@ public class EtlService {
         int totalRows = 0;
         int errorRows = 0;
         List<String> errorMessages = new ArrayList<>();
+        List<CleaningRule> cleaningRules = cleaningRuleRepository.findByEnabledFlagTrueOrderByPriorityNoAsc();
 
         try (InputStream is = file.getInputStream(); Workbook wb = new XSSFWorkbook(is)) {
             for (int i = 0; i < wb.getNumberOfSheets(); i++) {
@@ -326,12 +421,22 @@ public class EtlService {
                                 break;
                             }
                             case "parameter_value": {
-                                insertIgnoreDuplicate(
+                                UUID valueId = parseUUID(cells.get("valueid"));
+                                Map<String, Object> values = new LinkedHashMap<>();
+                                values.put("valueNum", parseBigDecimal(cells.get("valuenum")));
+                                values.put("qualityFlag", coalesce(cells.get("qualityflag"), "RAW"));
+                                List<CleaningLog> logs = applyCleaningRules(
+                                        "parameter_value", valueId, values, cleaningRules);
+
+                                int inserted = insertIgnoreDuplicate(
                                     "INSERT INTO prod.parameter_value (value_id, run_id, param_id, measured_at, value_num, quality_flag, created_at) " +
                                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                    parseUUID(cells.get("valueid")), parseUUID(cells.get("runid")), parseUUID(cells.get("paramid")),
-                                    parseTimestampOrNow(cells.get("measuredat")), parseBigDecimal(cells.get("valuenum")),
-                                    coalesce(cells.get("qualityflag"), "RAW"),                                    parseTimestampOrNow(cells.get("createdat")));
+                                    valueId, parseUUID(cells.get("runid")), parseUUID(cells.get("paramid")),
+                                    parseTimestampOrNow(cells.get("measuredat")), values.get("valueNum"),
+                                    values.get("qualityFlag"),                                    parseTimestampOrNow(cells.get("createdat")));
+                                if (inserted > 0) {
+                                    cleaningLogRepository.saveAll(logs);
+                                }
                                 totalRows++;
                                 equipmentOperationCount++;
                                 break;
@@ -392,15 +497,27 @@ public class EtlService {
                                 break;
                             }
                             case "quality_measurement": {
+                                UUID measurementId = parseUUID(cells.get("measurementid"));
                                 UUID unitId = existingUuid("prod.product_unit", "unit_id", cells.get("unitid"));
-                                insertIgnoreDuplicate(
+                                Map<String, Object> values = new LinkedHashMap<>();
+                                values.put("valueNum", parseBigDecimal(cells.get("valuenum")));
+                                values.put("isPass", parseBoolean(cells.get("ispass")));
+                                values.put("deviationValue", parseBigDecimal(cells.get("deviationvalue")));
+                                values.put("measurementMethod", coalesce(cells.get("measurementmethod"), "自动检测"));
+                                List<CleaningLog> logs = applyCleaningRules(
+                                        "quality_measurement", measurementId, values, cleaningRules);
+
+                                int inserted = insertIgnoreDuplicate(
                                     "INSERT INTO qc.quality_measurement (measurement_id, run_id, unit_id, metric_id, measured_at, value_num, is_pass, deviation_value, measurement_method, created_at) " +
                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    parseUUID(cells.get("measurementid")), parseUUID(cells.get("runid")), unitId,
+                                    measurementId, parseUUID(cells.get("runid")), unitId,
                                     parseUUID(cells.get("metricid")), parseTimestampOrNow(cells.get("measuredat")),
-                                    parseBigDecimal(cells.get("valuenum")), parseBoolean(cells.get("ispass")),
-                                    parseBigDecimal(cells.get("deviationvalue")), coalesce(cells.get("measurementmethod"), "自动检测"),
+                                    values.get("valueNum"), values.get("isPass"),
+                                    values.get("deviationValue"), values.get("measurementMethod"),
                                     parseTimestampOrNow(cells.get("createdat")));
+                                if (inserted > 0) {
+                                    cleaningLogRepository.saveAll(logs);
+                                }
                                 totalRows++;
                                 qualityDefectCount++;
                                 break;
@@ -693,6 +810,244 @@ public class EtlService {
         return sb.append("]").toString();
     }
 
+    private List<CleaningLog> applyCleaningRules(
+            String sourceTable,
+            UUID sourceId,
+            Map<String, Object> values,
+            List<CleaningRule> rules) {
+        if (rules.isEmpty()) {
+            return List.of();
+        }
+
+        List<CleaningLog> logs = new ArrayList<>();
+        for (CleaningRule rule : rules) {
+            if (!matchesTarget(sourceTable, rule.getTargetCategory())) {
+                continue;
+            }
+            if (!matchesCondition(rule.getConditionExpr(), values)) {
+                continue;
+            }
+
+            String before = toJsonObject(values);
+            boolean changed = applyCleaningAction(rule.getActionExpr(), values);
+            CleaningLog cleaningLog = new CleaningLog(rule.getRuleId(), sourceId);
+            cleaningLog.setSourceTable(sourceTable);
+            cleaningLog.setBeforeValue(before);
+            cleaningLog.setAfterValue(toJsonObject(values));
+            cleaningLog.setActionResult(changed ? "APPLIED" : "MATCHED");
+            logs.add(cleaningLog);
+        }
+        return logs;
+    }
+
+    private boolean matchesTarget(String sourceTable, String targetCategory) {
+        if (targetCategory == null || targetCategory.isBlank()) {
+            return true;
+        }
+        String normalized = targetCategory.trim().toLowerCase(Locale.ROOT);
+        return "all".equals(normalized)
+                || normalized.equals(sourceTable)
+                || normalized.equals(sourceTable.replace("_", ""))
+                || normalized.equals(sourceTable.replace("_", "-"));
+    }
+
+    private boolean matchesCondition(String conditionExpr, Map<String, Object> values) {
+        if (conditionExpr == null || conditionExpr.isBlank() || "true".equalsIgnoreCase(conditionExpr.trim())) {
+            return true;
+        }
+
+        String expr = conditionExpr.trim();
+        String lower = expr.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(" is null")) {
+            String field = normalizeField(expr.substring(0, lower.lastIndexOf(" is null")));
+            return values.get(field) == null;
+        }
+        if (lower.endsWith(" is not null")) {
+            String field = normalizeField(expr.substring(0, lower.lastIndexOf(" is not null")));
+            return values.get(field) != null;
+        }
+
+        String[] operators = {">=", "<=", "==", "!=", ">", "<", "="};
+        for (String op : operators) {
+            int index = expr.indexOf(op);
+            if (index <= 0) {
+                continue;
+            }
+            String field = normalizeField(expr.substring(0, index));
+            Object left = values.get(field);
+            Object right = parseLiteral(expr.substring(index + op.length()));
+            return compareValues(left, right, op);
+        }
+        return false;
+    }
+
+    private boolean applyCleaningAction(String actionExpr, Map<String, Object> values) {
+        if (actionExpr == null || actionExpr.isBlank()) {
+            return false;
+        }
+
+        boolean changed = false;
+        for (String rawAction : actionExpr.split("[;\\n]")) {
+            String action = rawAction.trim();
+            if (action.isEmpty()) {
+                continue;
+            }
+            if ("set_null".equalsIgnoreCase(action)) {
+                changed |= setIfChanged(values, "valueNum", null);
+                continue;
+            }
+            if (action.toLowerCase(Locale.ROOT).startsWith("clamp:")) {
+                changed |= clampValueNum(action, values);
+                continue;
+            }
+
+            int equalsIndex = action.indexOf('=');
+            if (equalsIndex <= 0) {
+                continue;
+            }
+            String field = normalizeField(action.substring(0, equalsIndex));
+            Object value = coerceValueForField(field, action.substring(equalsIndex + 1));
+            changed |= setIfChanged(values, field, value);
+        }
+        return changed;
+    }
+
+    private boolean clampValueNum(String action, Map<String, Object> values) {
+        String[] parts = action.split(":");
+        if (parts.length != 3) {
+            return false;
+        }
+        BigDecimal current = asBigDecimal(values.get("valueNum"));
+        BigDecimal min = parseBigDecimal(parts[1].trim());
+        BigDecimal max = parseBigDecimal(parts[2].trim());
+        if (current == null || min == null || max == null) {
+            return false;
+        }
+        BigDecimal clamped = current.max(min).min(max);
+        return setIfChanged(values, "valueNum", clamped);
+    }
+
+    private boolean setIfChanged(Map<String, Object> values, String field, Object value) {
+        if (!values.containsKey(field) || Objects.equals(values.get(field), value)) {
+            return false;
+        }
+        values.put(field, value);
+        return true;
+    }
+
+    private String normalizeField(String field) {
+        String normalized = field == null ? "" : field.trim();
+        return switch (normalized.toLowerCase(Locale.ROOT).replace("_", "").replace("-", "")) {
+            case "v", "value", "valuenum" -> "valueNum";
+            case "qualityflag" -> "qualityFlag";
+            case "ispass", "pass" -> "isPass";
+            case "deviation", "deviationvalue" -> "deviationValue";
+            case "measurementmethod" -> "measurementMethod";
+            default -> normalized;
+        };
+    }
+
+    private Object parseLiteral(String literal) {
+        String value = stripQuotes(literal == null ? "" : literal.trim());
+        if ("null".equalsIgnoreCase(value)) {
+            return null;
+        }
+        if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
+            return Boolean.parseBoolean(value);
+        }
+        BigDecimal decimal = parseBigDecimal(value);
+        return decimal != null ? decimal : value;
+    }
+
+    private Object coerceValueForField(String field, String rawValue) {
+        String value = stripQuotes(rawValue == null ? "" : rawValue.trim());
+        return switch (field) {
+            case "valueNum", "deviationValue" -> parseBigDecimal(value);
+            case "isPass" -> parseBoolean(value);
+            default -> value;
+        };
+    }
+
+    private boolean compareValues(Object left, Object right, String operator) {
+        if ("=".equals(operator)) {
+            operator = "==";
+        }
+        if (left == null || right == null) {
+            return switch (operator) {
+                case "==" -> left == right;
+                case "!=" -> left != right;
+                default -> false;
+            };
+        }
+
+        BigDecimal leftNumber = asBigDecimal(left);
+        BigDecimal rightNumber = asBigDecimal(right);
+        int comparison;
+        if (leftNumber != null && rightNumber != null) {
+            comparison = leftNumber.compareTo(rightNumber);
+        } else if (left instanceof Boolean || right instanceof Boolean) {
+            comparison = Boolean.compare(Boolean.parseBoolean(String.valueOf(left)), Boolean.parseBoolean(String.valueOf(right)));
+        } else {
+            comparison = String.valueOf(left).compareToIgnoreCase(String.valueOf(right));
+        }
+
+        return switch (operator) {
+            case "==" -> comparison == 0;
+            case "!=" -> comparison != 0;
+            case ">" -> comparison > 0;
+            case ">=" -> comparison >= 0;
+            case "<" -> comparison < 0;
+            case "<=" -> comparison <= 0;
+            default -> false;
+        };
+    }
+
+    private BigDecimal asBigDecimal(Object value) {
+        if (value instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (value instanceof Number number) {
+            return BigDecimal.valueOf(number.doubleValue());
+        }
+        return value == null ? null : parseBigDecimal(String.valueOf(value));
+    }
+
+    private String stripQuotes(String value) {
+        if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+            return value.substring(1, value.length() - 1);
+        }
+        return value;
+    }
+
+    private String toJsonObject(Map<String, Object> values) {
+        StringBuilder sb = new StringBuilder("{");
+        int i = 0;
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            if (i++ > 0) {
+                sb.append(",");
+            }
+            sb.append("\"").append(escapeJson(entry.getKey())).append("\":");
+            Object value = entry.getValue();
+            if (value == null) {
+                sb.append("null");
+            } else if (value instanceof Number || value instanceof Boolean) {
+                sb.append(value);
+            } else {
+                sb.append("\"").append(escapeJson(String.valueOf(value))).append("\"");
+            }
+        }
+        return sb.append("}").toString();
+    }
+
+    private String escapeJson(String value) {
+        return value
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", " ")
+                .replace("\r", " ")
+                .replace("\t", " ");
+    }
+
     private Timestamp parseTimestamp(String val) {
         if (val == null || val.isBlank()) return null;
         val = val.trim();
@@ -791,7 +1146,10 @@ public class EtlService {
                 l.getRuleId(),
                 l.getSourceTable(),
                 l.getSourceId() != null ? l.getSourceId().toString() : null,
-                l.getActionResult()
+                l.getBeforeValue(),
+                l.getAfterValue(),
+                l.getActionResult(),
+                l.getCreatedAt() != null ? l.getCreatedAt().toString() : null
         );
     }
 }

@@ -29,18 +29,21 @@ public class QcService {
     private final DefectTypeRepository defectTypeRepository;
     private final InspectionTaskRepository inspectionTaskRepository;
     private final DefectRecordRepository defectRecordRepository;
+    private final DefectInferenceService defectInferenceService;
 
     public QcService(
             QualityMetricDefRepository metricDefRepository,
             QualityMeasurementRepository measurementRepository,
             DefectTypeRepository defectTypeRepository,
             InspectionTaskRepository inspectionTaskRepository,
-            DefectRecordRepository defectRecordRepository) {
+            DefectRecordRepository defectRecordRepository,
+            DefectInferenceService defectInferenceService) {
         this.metricDefRepository = metricDefRepository;
         this.measurementRepository = measurementRepository;
         this.defectTypeRepository = defectTypeRepository;
         this.inspectionTaskRepository = inspectionTaskRepository;
         this.defectRecordRepository = defectRecordRepository;
+        this.defectInferenceService = defectInferenceService;
     }
 
     // ===== QualityMetricDef =====
@@ -222,22 +225,21 @@ public class QcService {
         List<DefectSampleResponse> results = new ArrayList<>();
 
         for (BatchDetectRequestItem item : items) {
-            // Create an inspection task for each item
+            DefectInferenceService.InferenceOutput inference = defectInferenceService.infer(item);
+
             InspectionTask inspection = new InspectionTask(
                     UUID.randomUUID(), UUID.randomUUID(), "defect_detection");
-            inspection.setResultStatus("completed");
-            inspection.setConfidence(new BigDecimal("0.95"));
+            double maxConfidence = inference.results().stream()
+                    .mapToDouble(DetectionResult::confidence)
+                    .max()
+                    .orElse(0.0);
+            boolean hasDefect = inference.results().stream()
+                    .anyMatch(result -> !"normal".equalsIgnoreCase(result.category()));
+            inspection.setModelName(defectInferenceService.modelName());
+            inspection.setModelVersion(defectInferenceService.modelVersion());
+            inspection.setResultStatus(hasDefect ? "DEFECT" : "PASS");
+            inspection.setConfidence(BigDecimal.valueOf(maxConfidence));
             inspectionTaskRepository.save(inspection);
-
-            // Build simulated detection result
-            List<DetectionResult> detectionResults = List.of(
-                    new DetectionResult("scratch", "minor", 0.92, "center"),
-                    new DetectionResult("dent", "moderate", 0.87, "top-right")
-            );
-            List<DefectBox> defectBoxes = List.of(
-                    new DefectBox("scratch", 0.92, new double[]{100, 100, 200, 150}, "minor"),
-                    new DefectBox("dent", 0.87, new double[]{300, 50, 400, 120}, "moderate")
-            );
 
             results.add(new DefectSampleResponse(
                     inspection.getInspectionId(),
@@ -245,9 +247,9 @@ public class QcService {
                     "image",
                     item.batchNo(),
                     item.imageUrl(),
-                    detectionResults,
-                    defectBoxes,
-                    "2 defect(s) detected"
+                    inference.results(),
+                    inference.defects(),
+                    inference.summary()
             ));
         }
 
@@ -269,7 +271,7 @@ public class QcService {
                 .filter(t -> t.getModelVersion() != null)
                 .map(InspectionTask::getModelVersion)
                 .findFirst()
-                .orElse("v1.0");
+                .orElse(defectInferenceService.modelVersion());
 
         return new DefectStatisticsResponse(totalSamples, avgConfidence, modelVersion);
     }

@@ -6,11 +6,15 @@
 import { computed, ref, watch } from 'vue';
 import type { EChartsCoreOption } from 'echarts/core';
 import { useECharts } from '@/hooks/useECharts';
-import type { GraphVisualizationNode, GraphVisualizationEdge } from '@/api/graph';
+import type { GatAttentionEdge, GraphVisualizationNode, GraphVisualizationEdge } from '@/api/graph';
 
 const props = defineProps<{
   nodes: GraphVisualizationNode[];
   edges: GraphVisualizationEdge[];
+  attentionEdges?: GatAttentionEdge[];
+  highlightNodeNames?: string[];
+  highlightEdges?: GatAttentionEdge[];
+  focusMode?: boolean;
 }>();
 
 const chartRef = ref<HTMLDivElement | null>(null);
@@ -37,38 +41,87 @@ const labelColorMap: Record<string, string> = {
 const chartOption = computed<EChartsCoreOption>(() => {
   const categories = [...new Set(props.nodes.map(n => n.label))];
   const categoryMap = Object.fromEntries(categories.map((c, i) => [c, i]));
+  const nodeMap = new Map(props.nodes.map(node => [node.graphId, node]));
+  const normalize = (value: string) => value.trim().toLowerCase();
+  const highlightNames = new Set((props.highlightNodeNames ?? []).map(normalize));
+  const focusedEdges = props.focusMode ? props.highlightEdges ?? [] : props.attentionEdges ?? [];
+  const attentionMap = new Map<string, GatAttentionEdge>();
 
-  const seriesData = props.nodes.map(node => ({
-    id: node.graphId,
-    name: node.graphId,
-    displayName: node.name || node.graphId,
-    category: categoryMap[node.label] ?? 0,
-    symbolSize: node.label === 'Batch' || node.label === 'ProductionBatch' ? 42 : node.label.includes('Defect') ? 30 : 22,
-    itemStyle: { color: labelColorMap[node.label] || '#94a3b8' },
-    label: {
-      show: true,
-      fontSize: 10,
-      color: '#e2e8f0',
-      formatter: () => node.name || node.graphId,
-    },
-  }));
+  for (const edge of focusedEdges) {
+    const key = `${normalize(edge.from)}|${normalize(edge.to)}|${normalize(edge.relationType)}`;
+    attentionMap.set(key, edge);
+  }
 
-  const seriesLinks = props.edges.map(edge => ({
-    source: edge.from,
-    target: edge.to,
-    value: edge.type,
-    label: {
-      show: true,
-      formatter: edge.type,
-      color: '#94a3b8',
-      fontSize: 9,
-    },
-    lineStyle: {
-      width: Math.max(1, Math.min(6, edge.weight * 3)),
-      color: '#64748b',
-      curveness: 0.2,
-    },
-  }));
+  const findAttention = (edge: GraphVisualizationEdge) => {
+    const fromNode = nodeMap.get(edge.from);
+    const toNode = nodeMap.get(edge.to);
+    const candidates = [
+      `${edge.from}|${edge.to}|${edge.type}`,
+      `${fromNode?.name ?? ''}|${toNode?.name ?? ''}|${edge.type}`,
+      `${fromNode?.graphId ?? ''}|${toNode?.graphId ?? ''}|${edge.type}`,
+    ];
+
+    for (const candidate of candidates) {
+      const hit = attentionMap.get(candidate.split('|').map(normalize).join('|'));
+      if (hit) return hit;
+    }
+    return undefined;
+  };
+
+  const seriesData = props.nodes.map(node => {
+    const displayName = node.name || node.graphId;
+    const isHighlighted = props.focusMode
+      ? highlightNames.has(normalize(displayName)) || highlightNames.has(normalize(node.graphId))
+      : false;
+    const baseSize = node.label === 'Batch' || node.label === 'ProductionBatch' ? 42 : node.label.includes('Defect') ? 30 : 22;
+
+    return {
+      id: node.graphId,
+      name: node.graphId,
+      displayName,
+      category: categoryMap[node.label] ?? 0,
+      symbolSize: isHighlighted ? baseSize + 14 : baseSize,
+      itemStyle: {
+        color: isHighlighted ? '#f59e0b' : labelColorMap[node.label] || '#94a3b8',
+        opacity: props.focusMode && !isHighlighted ? 0.28 : 1,
+        borderColor: isHighlighted ? '#fef3c7' : undefined,
+        borderWidth: isHighlighted ? 3 : 0,
+      },
+      label: {
+        show: !props.focusMode || isHighlighted,
+        fontSize: isHighlighted ? 12 : 10,
+        fontWeight: isHighlighted ? 700 : 400,
+        color: isHighlighted ? '#fef3c7' : '#e2e8f0',
+        formatter: () => displayName,
+      },
+    };
+  });
+
+  const seriesLinks = props.edges.map(edge => {
+    const attention = findAttention(edge);
+    const attentionWeight = attention?.attentionWeight ?? 0;
+    const isHighlighted = attentionWeight > 0;
+    const isDimmed = Boolean(props.focusMode && !isHighlighted);
+
+    return {
+      source: edge.from,
+      target: edge.to,
+      value: edge.type,
+      attentionWeight,
+      label: {
+        show: isHighlighted,
+        formatter: isHighlighted ? `${edge.type} ${(attentionWeight * 100).toFixed(0)}%` : edge.type,
+        color: isHighlighted ? '#fde68a' : '#94a3b8',
+        fontSize: 9,
+      },
+      lineStyle: {
+        width: isHighlighted ? Math.max(3, Math.min(9, attentionWeight * 10)) : Math.max(1, Math.min(6, edge.weight * 3)),
+        color: isHighlighted ? '#f59e0b' : '#64748b',
+        opacity: isHighlighted ? 0.95 : isDimmed ? 0.12 : 0.55,
+        curveness: 0.2,
+      },
+    };
+  });
 
   return {
     tooltip: {

@@ -1,8 +1,19 @@
 package com.example.demo.etl;
 
+import com.example.demo.common.exception.BusinessException;
 import com.example.demo.etl.dto.EtlDtos.*;
 import com.example.demo.etl.repository.ImportJobRepository;
 import com.example.demo.etl.service.EtlService;
+import com.example.demo.core.domain.ParameterDef;
+import com.example.demo.core.domain.ProcessStep;
+import com.example.demo.core.domain.Workstation;
+import com.example.demo.core.repository.ParameterDefRepository;
+import com.example.demo.core.repository.ProcessStepRepository;
+import com.example.demo.core.repository.WorkstationRepository;
+import com.example.demo.prod.domain.ProductionBatch;
+import com.example.demo.prod.repository.ProductionBatchRepository;
+import com.example.demo.qc.domain.DefectType;
+import com.example.demo.qc.repository.DefectTypeRepository;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.*;
@@ -36,6 +47,21 @@ class EtlServiceTest {
 
     @Autowired
     private ImportJobRepository importJobRepository;
+
+    @Autowired
+    private ProductionBatchRepository productionBatchRepository;
+
+    @Autowired
+    private ProcessStepRepository processStepRepository;
+
+    @Autowired
+    private WorkstationRepository workstationRepository;
+
+    @Autowired
+    private ParameterDefRepository parameterDefRepository;
+
+    @Autowired
+    private DefectTypeRepository defectTypeRepository;
 
     // =====================================================================
     //  Excel 构建工具 — 支持多 sheet、混合单元格类型
@@ -387,6 +413,57 @@ class EtlServiceTest {
         assertEquals(true, row.get("is_pass"));
     }
 
+    @Test @Order(24)
+    void testCleaningRulesAppliedDuringImport() throws Exception {
+        String suffix = ts();
+        CleaningRuleResponse parameterRule = etlService.createCleaningRule(
+                new CreateCleaningRuleRequest("PV-NEG-" + suffix, "Flag negative parameter",
+                        "parameter_value", "valueNum < 0", "qualityFlag=ANOMALY", 1));
+        CleaningRuleResponse measurementRule = etlService.createCleaningRule(
+                new CreateCleaningRuleRequest("QM-NEG-" + suffix, "Fail negative measurement",
+                        "quality_measurement", "v < 0", "isPass=false;deviationValue=999", 2));
+
+        String runId = uid();
+        String valueId = uid();
+        String measurementId = uid();
+        byte[] xlsx = buildExcel(Map.of(
+            "parameter_value", new SheetDef(
+                new String[]{"value_id","run_id","param_id","measured_at","value_num","quality_flag","created_at"},
+                new String[][]{{valueId, runId, uid(), "2024-06-01", "num:-5.5", "RAW", "2024-06-01"}}
+            ),
+            "quality_measurement", new SheetDef(
+                new String[]{"measurement_id","run_id","unit_id","metric_id","measured_at",
+                             "value_num","is_pass","deviation_value","measurement_method","created_at"},
+                new String[][]{{measurementId, runId, uid(), uid(), "2024-06-01",
+                                "num:-2.0", "true", "num:0", "AUTO", "2024-06-01"}}
+            )
+        ));
+
+        etlService.importManufacturingData(asFile(xlsx, "cleaning-rules.xlsx"));
+
+        Map<String, Object> parameterRow = jdbcTemplate.queryForMap(
+                "SELECT value_num, quality_flag FROM prod.parameter_value WHERE value_id = ?::uuid", valueId);
+        assertEquals("ANOMALY", parameterRow.get("quality_flag"));
+
+        Map<String, Object> measurementRow = jdbcTemplate.queryForMap(
+                "SELECT is_pass, deviation_value FROM qc.quality_measurement WHERE measurement_id = ?::uuid", measurementId);
+        assertEquals(false, measurementRow.get("is_pass"));
+        assertEquals(0, new java.math.BigDecimal("999").compareTo((java.math.BigDecimal) measurementRow.get("deviation_value")));
+
+        Integer logCount = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM etl.cleaning_log WHERE rule_id IN (?::uuid, ?::uuid) AND action_result = 'APPLIED'",
+                Integer.class, parameterRule.ruleId().toString(), measurementRule.ruleId().toString());
+        assertEquals(2, logCount);
+
+        String importId = jdbcTemplate.queryForObject(
+                "SELECT import_id FROM etl.import_job WHERE source_name = 'cleaning-rules.xlsx' ORDER BY started_at DESC LIMIT 1",
+                String.class);
+        assertNotNull(importId);
+        List<CleaningLogResponse> importLogs = etlService.listCleaningLogsByImportJob(UUID.fromString(importId));
+        assertEquals(2, importLogs.size());
+        assertTrue(importLogs.stream().allMatch(log -> "APPLIED".equals(log.actionResult())));
+    }
+
     // =====================================================================
     //  10. 多 sheet 联合导入 — 一次导入全部 8 种表
     // =====================================================================
@@ -571,6 +648,89 @@ class EtlServiceTest {
         assertNotNull(result);
         assertNotNull(result.taskId());
         assertEquals("Station-A", result.station());
+
+        Map<String, Object> job = jdbcTemplate.queryForMap("""
+                SELECT source_type, source_name, target_table, import_status, error_log
+                FROM etl.import_job
+                WHERE import_id = ?
+                """, UUID.fromString(result.taskId()));
+        assertEquals("ONLINE", job.get("source_type"));
+        assertEquals("Station-A", job.get("source_name"));
+        assertEquals("online_stream", job.get("target_table"));
+        assertEquals("RUNNING", job.get("import_status"));
+        assertTrue(importJobRepository.findById(UUID.fromString(result.taskId()))
+                .orElseThrow()
+                .getErrorLog()
+                .contains("DEVICE-01"));
+
+        BusinessException exception = assertThrows(BusinessException.class, () ->
+                etlService.submitOnlineUpload(new OnlineUploadPayload(
+                        "", "BATCH-001", "DEVICE-01", "100Hz", "mapping-config")));
+        assertEquals(400, exception.getCode());
+    }
+
+    @Test @Order(94)
+    void testSubmitManualRecordCreatesInspectionAndDefectChain() {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        ProcessStep step = processStepRepository.save(new ProcessStep("MAN-" + suffix, "Manual Step", 80, true));
+        Workstation station = workstationRepository.save(new Workstation(step.getStepId(), "MAN-ST-" + suffix, "Manual Station " + suffix));
+
+        ParameterDef temperature = new ParameterDef("temperature", "Temperature", "PROCESS", "NUMBER");
+        temperature.setStepId(step.getStepId());
+        parameterDefRepository.save(temperature);
+        ParameterDef pressure = new ParameterDef("pressure", "Pressure", "PROCESS", "NUMBER");
+        pressure.setStepId(step.getStepId());
+        parameterDefRepository.save(pressure);
+
+        DefectType defectType = defectTypeRepository.save(
+                new DefectType(step.getStepId(), "MANUAL_DEFECT_" + suffix, "Manual Defect", "MANUAL", 3));
+        ProductionBatch batch = productionBatchRepository.save(new ProductionBatch("MAN-BATCH-" + suffix, UUID.randomUUID()));
+
+        ManualRecordResult result = etlService.submitManualRecord(new ManualRecordPayload(
+                batch.getBatchNo(),
+                station.getStationCode(),
+                "CMP-" + suffix,
+                236.5,
+                4.2,
+                88.0,
+                120.0,
+                43.0,
+                1.2,
+                defectType.getDefectCode(),
+                "严重",
+                0.87
+        ));
+
+        assertNotNull(result.id());
+        Map<String, Object> run = jdbcTemplate.queryForMap("""
+                SELECT run_id, batch_id, step_id, station_id, run_status
+                FROM prod.process_run
+                WHERE run_id = ?
+                """, UUID.fromString(result.id()));
+        assertEquals(batch.getBatchId(), run.get("batch_id"));
+        assertEquals(step.getStepId(), run.get("step_id"));
+        assertEquals(station.getStationId(), run.get("station_id"));
+        assertEquals("COMPLETED", run.get("run_status"));
+
+        Integer paramCount = jdbcTemplate.queryForObject("""
+                SELECT COUNT(*)
+                FROM prod.parameter_value
+                WHERE run_id = ?
+                """, Integer.class, UUID.fromString(result.id()));
+        assertEquals(2, paramCount);
+
+        Map<String, Object> defect = jdbcTemplate.queryForMap("""
+                SELECT i.run_id, i.step_id, i.inspection_type, dr.defect_type_id, dr.confidence, dr.severity_level
+                FROM qc.defect_record dr
+                JOIN qc.inspection_task i ON i.inspection_id = dr.inspection_id
+                WHERE i.run_id = ?
+                """, UUID.fromString(result.id()));
+        assertEquals(UUID.fromString(result.id()), defect.get("run_id"));
+        assertEquals(step.getStepId(), defect.get("step_id"));
+        assertEquals("MANUAL", defect.get("inspection_type"));
+        assertEquals(defectType.getDefectTypeId(), defect.get("defect_type_id"));
+        assertEquals(0, new java.math.BigDecimal("0.870000").compareTo((java.math.BigDecimal) defect.get("confidence")));
+        assertEquals(4, ((Number) defect.get("severity_level")).intValue());
     }
 
     @Test @Order(91)

@@ -3,6 +3,8 @@ package com.example.demo.eval.controller;
 import com.example.demo.common.api.ApiResponse;
 import com.example.demo.eval.dto.EvalDtos.*;
 import com.example.demo.eval.service.EvalService;
+import com.example.demo.prod.domain.ProductionBatch;
+import com.example.demo.prod.repository.ProductionBatchRepository;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -13,14 +15,22 @@ import java.util.UUID;
 public class EvalController {
 
     private final EvalService evalService;
+    private final ProductionBatchRepository batchRepository;
 
-    public EvalController(EvalService evalService) {
+    public EvalController(EvalService evalService, ProductionBatchRepository batchRepository) {
         this.evalService = evalService;
+        this.batchRepository = batchRepository;
     }
 
     private UUID parseBatchId(String batchId) {
         if (batchId == null || batchId.isBlank()) return null;
-        try { return UUID.fromString(batchId); } catch (IllegalArgumentException e) { return null; }
+        try {
+            return UUID.fromString(batchId);
+        } catch (IllegalArgumentException e) {
+            return batchRepository.findByBatchNo(batchId)
+                    .map(ProductionBatch::getBatchId)
+                    .orElse(null);
+        }
     }
 
     // ──────────────────── Assessment Dashboard ────────────────────

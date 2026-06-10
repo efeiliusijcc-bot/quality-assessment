@@ -25,6 +25,13 @@ public final class KgDtos {
         String relationType
     ) {}
 
+    public record GatImportantItem(
+        String name,
+        String category,
+        double score,
+        String reason
+    ) {}
+
     public record GatOptimizationResponse(
         String batchId,
         int nodeCount,
@@ -33,6 +40,10 @@ public final class KgDtos {
         int embeddingDim,
         List<GatNodeEmbeddingEntry> nodeEmbeddings,
         List<GatAttentionEdge> attentionEdges,
+        List<GatImportantItem> topParameters,
+        List<GatImportantItem> topDefects,
+        List<GatImportantItem> topProcessSteps,
+        String explanationSummary,
         String summary
     ) {}
 
@@ -55,6 +66,41 @@ public final class KgDtos {
     public record GraphVisualizationResponse(
         List<GraphVisualizationNode> nodes,
         List<GraphVisualizationEdge> edges
+    ) {}
+
+    public record GraphAssociationRelation(
+        String source,
+        String target,
+        String relationType,
+        String sourceType,
+        String targetType,
+        double support,
+        double confidence,
+        double lift,
+        String reason
+    ) {}
+
+    public record GraphFilterOptions(
+        List<String> defects,
+        List<String> processSteps,
+        List<String> parameters,
+        List<String> relationTypes
+    ) {}
+
+    public record GraphAnalysisResponse(
+        String batchId,
+        List<GraphAssociationRelation> ruleRelations,
+        List<GraphAssociationRelation> aprioriRelations,
+        GraphFilterOptions filterOptions
+    ) {}
+
+    public record GraphPathSearchResponse(
+        String batchId,
+        String source,
+        String target,
+        List<GraphVisualizationNode> nodes,
+        List<GraphVisualizationEdge> edges,
+        String summary
     ) {}
 
     // ─── GraphVersion CRUD ───

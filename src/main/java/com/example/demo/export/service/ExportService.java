@@ -16,6 +16,17 @@ import com.example.demo.qc.domain.InspectionTask;
 import com.example.demo.qc.repository.DefectRecordRepository;
 import com.example.demo.qc.repository.DefectTypeRepository;
 import com.example.demo.qc.repository.InspectionTaskRepository;
+import com.lowagie.text.Document;
+import com.lowagie.text.DocumentException;
+import com.lowagie.text.Element;
+import com.lowagie.text.Font;
+import com.lowagie.text.Paragraph;
+import com.lowagie.text.Phrase;
+import com.lowagie.text.pdf.PdfPCell;
+import com.lowagie.text.pdf.PdfPTable;
+import com.lowagie.text.pdf.PdfWriter;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
@@ -26,8 +37,18 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import org.apache.poi.ss.usermodel.BorderStyle;
+import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
+import org.apache.poi.ss.usermodel.FillPatternType;
+import org.apache.poi.ss.usermodel.HorizontalAlignment;
+import org.apache.poi.ss.usermodel.IndexedColors;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -41,6 +62,7 @@ public class ExportService {
     private final InspectionTaskRepository inspectionTaskRepository;
     private final ProductionBatchRepository productionBatchRepository;
     private final WorkstationRepository workstationRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public ExportService(
             ProcessRunRepository processRunRepository,
@@ -48,144 +70,26 @@ public class ExportService {
             DefectTypeRepository defectTypeRepository,
             InspectionTaskRepository inspectionTaskRepository,
             ProductionBatchRepository productionBatchRepository,
-            WorkstationRepository workstationRepository) {
+            WorkstationRepository workstationRepository,
+            JdbcTemplate jdbcTemplate) {
         this.processRunRepository = processRunRepository;
         this.defectRecordRepository = defectRecordRepository;
         this.defectTypeRepository = defectTypeRepository;
         this.inspectionTaskRepository = inspectionTaskRepository;
         this.productionBatchRepository = productionBatchRepository;
         this.workstationRepository = workstationRepository;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     public ExportPageResult getRecords(ExportSearchParams params) {
-        int page = params.page() <= 0 ? 1 : params.page();
-        int pageSize = params.pageSize() <= 0 ? 10 : params.pageSize();
-
-        // Load all inspection tasks
-        List<InspectionTask> allTasks = inspectionTaskRepository.findAll();
-
-        // Batch-load all related entities in one pass
-        List<ProcessRun> allRuns = processRunRepository.findAll();
-        Map<UUID, ProcessRun> runMap = new HashMap<>();
-        for (ProcessRun run : allRuns) {
-            runMap.put(run.getRunId(), run);
-        }
-
-        Map<UUID, ProductionBatch> batchMap = new HashMap<>();
-        for (ProcessRun run : allRuns) {
-            if (run.getBatchId() != null) {
-                productionBatchRepository.findById(run.getBatchId())
-                    .ifPresent(b -> batchMap.put(run.getBatchId(), b));
-            }
-        }
-
-        Map<UUID, Workstation> stationMap = new HashMap<>();
-        for (ProcessRun run : allRuns) {
-            if (run.getStationId() != null) {
-                workstationRepository.findById(run.getStationId())
-                    .ifPresent(ws -> stationMap.put(run.getStationId(), ws));
-            }
-        }
-
-        // Batch-load defect records and defect types
-        List<DefectRecord> allDefects = defectRecordRepository.findByInspectionIdIn(
-                allTasks.stream().map(InspectionTask::getInspectionId).toList());
-        Map<UUID, List<DefectRecord>> defectsByInspection = new HashMap<>();
-        for (DefectRecord dr : allDefects) {
-            defectsByInspection.computeIfAbsent(dr.getInspectionId(), k -> new ArrayList<>()).add(dr);
-        }
-
-        Map<UUID, DefectType> defectTypeMap = new HashMap<>();
-        defectTypeRepository.findAll().forEach(dt -> defectTypeMap.put(dt.getDefectTypeId(), dt));
-
-        List<ExportRecord> allRecords = new ArrayList<>();
-
-        for (InspectionTask task : allTasks) {
-            UUID runId = task.getRunId();
-            ProcessRun run = runMap.get(runId);
-            if (run == null) {
-                continue;
-            }
-
-            // Determine batch number
-            String batchNo = null;
-            if (run.getBatchId() != null) {
-                ProductionBatch batch = batchMap.get(run.getBatchId());
-                if (batch != null) {
-                    batchNo = batch.getBatchNo();
-                }
-            }
-
-            // Determine station name
-            String stationName = null;
-            if (run.getStationId() != null) {
-                Workstation ws = stationMap.get(run.getStationId());
-                if (ws != null) {
-                    stationName = ws.getStationName();
-                }
-            }
-
-            // Get defect records for this inspection (from pre-loaded map)
-            List<DefectRecord> defects = defectsByInspection.getOrDefault(task.getInspectionId(), List.of());
-            if (defects.isEmpty()) {
-                String defectTypeName = "N/A";
-                double confidence = task.getConfidence() != null ? task.getConfidence().doubleValue() : 0.0;
-                String status = task.getResultStatus() != null ? task.getResultStatus().toLowerCase() : "pass";
-
-                allRecords.add(new ExportRecord(
-                        task.getInspectionId().toString(),
-                        formatInstant(task.getInspectedAt()),
-                        batchNo != null ? batchNo : "",
-                        stationName != null ? stationName : "",
-                        defectTypeName,
-                        confidence,
-                        status
-                ));
-            } else {
-                for (DefectRecord dr : defects) {
-                    String defectTypeName = "Unknown";
-                    if (dr.getDefectTypeId() != null) {
-                        DefectType dt = defectTypeMap.get(dr.getDefectTypeId());
-                        if (dt != null) {
-                            defectTypeName = dt.getDefectName();
-                        }
-                    }
-
-                    double confidence = dr.getConfidence() != null ? dr.getConfidence().doubleValue() : 0.0;
-                    String status = task.getResultStatus() != null ? task.getResultStatus().toLowerCase() : "pass";
-
-                    allRecords.add(new ExportRecord(
-                            dr.getDefectId().toString(),
-                            formatInstant(task.getInspectedAt()),
-                            batchNo != null ? batchNo : "",
-                            stationName != null ? stationName : "",
-                            defectTypeName,
-                            confidence,
-                            status
-                    ));
-                }
-            }
-        }
-
-        // Sort by date descending
-        allRecords.sort(Comparator.comparing(ExportRecord::date, Comparator.reverseOrder()));
-
-        // Apply filters
-        List<ExportRecord> filtered = allRecords.stream()
-                .filter(r -> matchBatchId(r, params.batchId()))
-                .filter(r -> matchStation(r, params.station()))
-                .filter(r -> matchStatus(r, params.status()))
-                .filter(r -> matchDateRange(r, params.dateRange()))
-                .toList();
-
+        ExportSearchParams query = normalizeParams(params);
+        int page = query.page() <= 0 ? 1 : query.page();
+        int pageSize = query.pageSize() <= 0 ? 10 : query.pageSize();
+        List<ExportRecord> filtered = findFilteredRecords(query);
         int total = filtered.size();
-
-        // Apply pagination
         int from = Math.min((page - 1) * pageSize, total);
         int to = Math.min(from + pageSize, total);
-        List<ExportRecord> paged = filtered.subList(from, to);
-
-        return new ExportPageResult(paged, total);
+        return new ExportPageResult(filtered.subList(from, to), total);
     }
 
     public ExportFileResponse exportExcel(ExportSearchParams params) {
@@ -199,43 +103,160 @@ public class ExportService {
     }
 
     public byte[] generateExcelBytes(ExportSearchParams params) {
-        ExportPageResult result = getRecords(params);
-        // Generate a simple CSV-like content as a placeholder for Excel
-        StringBuilder sb = new StringBuilder();
-        sb.append("ID,Date,BatchId,Station,DefectType,Confidence,Status\n");
-        for (ExportRecord r : result.list()) {
-            sb.append(csvEscape(r.id())).append(",")
-              .append(csvEscape(r.date())).append(",")
-              .append(csvEscape(r.batchId())).append(",")
-              .append(csvEscape(r.station())).append(",")
-              .append(csvEscape(r.defectType())).append(",")
-              .append(r.confidence()).append(",")
-              .append(csvEscape(r.status())).append("\n");
+        List<ExportRecord> records = findFilteredRecords(normalizeParams(params));
+        try (XSSFWorkbook workbook = new XSSFWorkbook();
+             ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.createSheet("Assessment Results");
+            CellStyle headerStyle = createExcelHeaderStyle(workbook);
+            CellStyle percentStyle = workbook.createCellStyle();
+            percentStyle.setDataFormat(workbook.createDataFormat().getFormat("0.0%"));
+
+            String[] headers = {"ID", "评估时间", "生产批次", "工位", "主要缺陷类型", "AI 置信度", "状态"};
+            Row header = sheet.createRow(0);
+            for (int i = 0; i < headers.length; i++) {
+                Cell cell = header.createCell(i);
+                cell.setCellValue(headers[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            int rowIndex = 1;
+            for (ExportRecord record : records) {
+                Row row = sheet.createRow(rowIndex++);
+                row.createCell(0).setCellValue(record.id());
+                row.createCell(1).setCellValue(record.date());
+                row.createCell(2).setCellValue(record.batchId());
+                row.createCell(3).setCellValue(record.station());
+                row.createCell(4).setCellValue(record.defectType());
+                Cell confidenceCell = row.createCell(5);
+                confidenceCell.setCellValue(record.confidence());
+                confidenceCell.setCellStyle(percentStyle);
+                row.createCell(6).setCellValue(toStatusLabel(record.status()));
+            }
+
+            int[] widths = {38, 20, 20, 18, 22, 14, 12};
+            for (int i = 0; i < widths.length; i++) {
+                sheet.setColumnWidth(i, widths[i] * 256);
+            }
+            workbook.write(out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to generate Excel export", e);
         }
-        return sb.toString().getBytes();
     }
 
     public byte[] generatePdfBytes(ExportSearchParams params) {
-        ExportPageResult result = getRecords(params);
-        // Generate a simple text content as a placeholder for PDF
-        StringBuilder sb = new StringBuilder();
-        sb.append("Assessment Report\n");
-        sb.append("=================\n\n");
-        sb.append("Total records: ").append(result.total()).append("\n\n");
-        for (ExportRecord r : result.list()) {
-            sb.append("ID: ").append(r.id())
-              .append(" | Date: ").append(r.date())
-              .append(" | Batch: ").append(r.batchId())
-              .append(" | Station: ").append(r.station())
-              .append(" | Defect: ").append(r.defectType())
-              .append(" | Confidence: ").append(r.confidence())
-              .append(" | Status: ").append(r.status())
-              .append("\n");
+        List<ExportRecord> records = findFilteredRecords(normalizeParams(params));
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Document document = new Document();
+            PdfWriter.getInstance(document, out);
+            document.open();
+
+            Font titleFont = new Font(Font.HELVETICA, 18, Font.BOLD);
+            Font metaFont = new Font(Font.HELVETICA, 10, Font.NORMAL);
+            Paragraph title = new Paragraph("Assessment Export Report", titleFont);
+            title.setAlignment(Element.ALIGN_CENTER);
+            document.add(title);
+            document.add(new Paragraph("Generated at: " + formatInstant(Instant.now()), metaFont));
+            document.add(new Paragraph("Total records: " + records.size(), metaFont));
+            document.add(new Paragraph(" "));
+
+            PdfPTable table = new PdfPTable(new float[] {2.2f, 2.2f, 1.6f, 1.8f, 2.0f, 1.1f, 1.0f});
+            table.setWidthPercentage(100);
+            addPdfHeader(table, "ID");
+            addPdfHeader(table, "Date");
+            addPdfHeader(table, "Batch");
+            addPdfHeader(table, "Station");
+            addPdfHeader(table, "Defect");
+            addPdfHeader(table, "Confidence");
+            addPdfHeader(table, "Status");
+
+            for (ExportRecord record : records) {
+                table.addCell(trimForPdf(record.id(), 36));
+                table.addCell(record.date());
+                table.addCell(record.batchId());
+                table.addCell(record.station());
+                table.addCell(record.defectType());
+                table.addCell(String.format("%.1f%%", record.confidence() * 100));
+                table.addCell(toStatusLabel(record.status()));
+            }
+            document.add(table);
+            document.close();
+            return out.toByteArray();
+        } catch (DocumentException | IOException e) {
+            throw new IllegalStateException("Failed to generate PDF export", e);
         }
-        return sb.toString().getBytes();
     }
 
-    // ==================== Filter helpers ====================
+    private List<ExportRecord> findFilteredRecords(ExportSearchParams params) {
+        List<ExportRecord> allRecords = jdbcTemplate.query("""
+                SELECT CAST(COALESCE(dr.defect_id, it.inspection_id) AS varchar) AS id,
+                       it.inspected_at,
+                       COALESCE(pb.batch_no, '') AS batch_no,
+                       COALESCE(ws.station_name, '') AS station_name,
+                       COALESCE(dt.defect_name, 'N/A') AS defect_name,
+                       COALESCE(dr.confidence, it.confidence, 0) AS confidence,
+                       LOWER(COALESCE(it.result_status, 'pass')) AS result_status
+                FROM qc.inspection_task it
+                JOIN prod.process_run pr ON pr.run_id = it.run_id
+                LEFT JOIN prod.production_batch pb ON pb.batch_id = pr.batch_id
+                LEFT JOIN core.workstation ws ON ws.station_id = pr.station_id
+                LEFT JOIN qc.defect_record dr ON dr.inspection_id = it.inspection_id
+                LEFT JOIN qc.defect_type dt ON dt.defect_type_id = dr.defect_type_id
+                ORDER BY it.inspected_at DESC NULLS LAST, id
+                """,
+                (rs, rowNum) -> new ExportRecord(
+                        rs.getString("id"),
+                        formatInstant(rs.getTimestamp("inspected_at") == null ? null : rs.getTimestamp("inspected_at").toInstant()),
+                        rs.getString("batch_no"),
+                        rs.getString("station_name"),
+                        rs.getString("defect_name"),
+                        rs.getBigDecimal("confidence") == null ? 0.0 : rs.getBigDecimal("confidence").doubleValue(),
+                        rs.getString("result_status")
+                ));
+
+        return allRecords.stream()
+                .filter(record -> matchBatchId(record, params.batchId()))
+                .filter(record -> matchStation(record, params.station()))
+                .filter(record -> matchStatus(record, params.status()))
+                .filter(record -> matchDateRange(record, params.dateRange()))
+                .toList();
+    }
+
+    private ExportSearchParams normalizeParams(ExportSearchParams params) {
+        if (params == null) {
+            return new ExportSearchParams(null, null, null, null, 1, 10);
+        }
+        return params;
+    }
+
+    private CellStyle createExcelHeaderStyle(XSSFWorkbook workbook) {
+        CellStyle style = workbook.createCellStyle();
+        style.setAlignment(HorizontalAlignment.CENTER);
+        style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        style.setBorderBottom(BorderStyle.THIN);
+        org.apache.poi.ss.usermodel.Font font = workbook.createFont();
+        font.setBold(true);
+        style.setFont(font);
+        return style;
+    }
+
+    private void addPdfHeader(PdfPTable table, String text) {
+        PdfPCell cell = new PdfPCell(new Phrase(text, new Font(Font.HELVETICA, 9, Font.BOLD)));
+        cell.setHorizontalAlignment(Element.ALIGN_CENTER);
+        table.addCell(cell);
+    }
+
+    private String toStatusLabel(String status) {
+        return "pass".equalsIgnoreCase(status) ? "Pass" : "Fail";
+    }
+
+    private String trimForPdf(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value == null ? "" : value;
+        }
+        return value.substring(0, maxLength - 3) + "...";
+    }
 
     private boolean matchBatchId(ExportRecord record, String batchId) {
         if (batchId == null || batchId.isBlank()) {
@@ -270,7 +291,6 @@ public class ExportService {
         try {
             LocalDate start = LocalDate.parse(startStr);
             LocalDate end = LocalDate.parse(endStr);
-            // Parse the record date (format: "yyyy-MM-dd HH:mm:ss")
             LocalDate recordDate = LocalDate.parse(record.date().substring(0, 10));
             return !recordDate.isBefore(start) && !recordDate.isAfter(end);
         } catch (Exception e) {
@@ -283,13 +303,5 @@ public class ExportService {
             return "";
         }
         return instant.atZone(ZoneOffset.UTC).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-    }
-
-    private String csvEscape(String value) {
-        if (value == null) return "";
-        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
-            return "\"" + value.replace("\"", "\"\"") + "\"";
-        }
-        return value;
     }
 }

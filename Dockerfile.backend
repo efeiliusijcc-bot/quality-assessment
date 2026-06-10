@@ -1,0 +1,34 @@
+# Backend Docker image for the Spring Boot service.
+# Build:
+#   docker build -f Dockerfile.backend -t quality-assessment-backend:latest .
+
+FROM maven:3.9.9-eclipse-temurin-17 AS build
+
+WORKDIR /workspace
+
+COPY pom.xml mvnw ./
+COPY .mvn .mvn
+RUN chmod +x mvnw
+
+# Cache dependencies first.
+RUN ./mvnw -q -DskipTests dependency:go-offline
+
+COPY src src
+RUN ./mvnw -q clean package -DskipTests
+
+FROM eclipse-temurin:17-jre
+
+WORKDIR /app
+
+RUN useradd --system --create-home --uid 10001 appuser
+
+COPY --from=build /workspace/target/*.jar /app/app.jar
+
+ENV SERVER_PORT=8080
+ENV JAVA_OPTS="-Xms256m -Xmx1024m"
+
+EXPOSE 8080
+
+USER appuser
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]

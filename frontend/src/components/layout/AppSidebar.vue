@@ -1,6 +1,6 @@
 <template>
   <aside
-    class="h-screen border-r border-slate-800/80 bg-slate-950/95 px-4 py-6 backdrop-blur"
+    class="sticky top-4 hidden h-[calc(100vh-32px)] shrink-0 overflow-y-auto rounded-[28px] border border-slate-800/80 bg-slate-950/95 px-4 py-6 shadow-[0_24px_70px_rgba(2,6,23,0.35)] backdrop-blur lg:block"
     :style="{ width: sidebarWidth }"
   >
     <div class="mb-8 flex items-center gap-3 overflow-hidden px-2">
@@ -83,6 +83,7 @@ const resolveIcon = (iconName?: string) => {
   height: 48px;
   margin-bottom: 8px;
   border-radius: 14px;
+  letter-spacing: 0.02em;
 }
 
 :deep(.el-menu-item.is-active),
@@ -95,5 +96,14 @@ const resolveIcon = (iconName?: string) => {
   min-width: auto;
   padding-left: 52px !important;
   background-color: rgba(15, 23, 42, 0.38) !important;
+}
+
+aside::-webkit-scrollbar {
+  width: 6px;
+}
+
+aside::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
 }
 </style>

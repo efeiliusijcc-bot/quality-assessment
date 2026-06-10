@@ -125,6 +125,16 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'cleaning-rules',
+        name: 'cleaning-rules',
+        component: () => import('@/views/upload/CleaningRulesView.vue'),
+        meta: {
+          title: '数据清洗规则',
+          icon: 'Brush',
+          roles: ['admin', 'engineer'],
+        },
+      },
+      {
         path: 'export',
         name: 'export',
         component: () => import('@/views/export/ExportView.vue'),

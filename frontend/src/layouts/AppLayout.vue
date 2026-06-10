@@ -1,8 +1,8 @@
 <template>
-  <div class="flex min-h-screen bg-transparent p-4">
+  <div class="flex min-h-screen bg-transparent p-3 sm:p-4">
     <AppSidebar />
 
-    <div class="min-w-0 flex-1 px-4">
+    <div class="min-w-0 flex-1 px-2 sm:px-4">
       <AppHeader />
 
       <main class="page-shell">

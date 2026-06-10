@@ -65,7 +65,7 @@ public class ExportController {
         byte[] data = exportService.generateExcelBytes(params);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=assessment.xlsx")
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .body(data);
     }
 
@@ -78,7 +78,7 @@ public class ExportController {
         byte[] data = exportService.generatePdfBytes(params);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=assessment-report.pdf")
-                .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                .contentType(MediaType.APPLICATION_PDF)
                 .body(data);
     }
 }

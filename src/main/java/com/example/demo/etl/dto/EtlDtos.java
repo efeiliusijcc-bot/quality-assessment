@@ -10,11 +10,11 @@ public final class EtlDtos {
     // ===== Upload DTOs =====
 
     public record OnlineUploadPayload(
-        String station,
-        String batchNo,
-        String deviceId,
-        String frequency,
-        String mapping
+        @NotBlank String station,
+        @NotBlank String batchNo,
+        @NotBlank String deviceId,
+        @NotBlank String frequency,
+        @NotBlank String mapping
     ) {}
 
     public record OnlineUploadResult(
@@ -110,6 +110,9 @@ public final class EtlDtos {
         UUID ruleId,
         String sourceTable,
         String sourceId,
-        String actionResult
+        String beforeValue,
+        String afterValue,
+        String actionResult,
+        String createdAt
     ) {}
 }

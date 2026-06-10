@@ -125,8 +125,8 @@ class QcServiceTest {
     @Test
     void testBatchDetect() {
         List<BatchDetectRequestItem> items = List.of(
-                new BatchDetectRequestItem("Sample A", "BATCH-001", "http://example.com/a.jpg"),
-                new BatchDetectRequestItem("Sample B", "BATCH-001", "http://example.com/b.jpg")
+                new BatchDetectRequestItem("Sample A crack", "BATCH-001", "http://example.com/a-crack.jpg"),
+                new BatchDetectRequestItem("Sample B void", "BATCH-001", "http://example.com/b-void.jpg")
         );
         BatchDetectResponse response = qcService.batchDetect(items);
 
@@ -136,7 +136,7 @@ class QcServiceTest {
         assertEquals("Batch detection completed", response.message());
 
         DefectSampleResponse first = response.results().get(0);
-        assertEquals("Sample A", first.name());
+        assertEquals("Sample A crack", first.name());
         assertFalse(first.results().isEmpty());
         assertFalse(first.defects().isEmpty());
     }
@@ -149,6 +149,6 @@ class QcServiceTest {
         assertNotNull(stats);
         assertEquals(0, stats.totalSamples());
         assertEquals(0.0, stats.avgConfidence());
-        assertEquals("v1.0", stats.modelVersion());
+        assertEquals("rules-fallback-v1", stats.modelVersion());
     }
 }

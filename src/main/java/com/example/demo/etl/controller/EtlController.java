@@ -39,6 +39,11 @@ public class EtlController {
         return ApiResponse.success(etlService.getImportJob(id));
     }
 
+    @GetMapping("/import-jobs/{id}/cleaning-logs")
+    public ApiResponse<List<CleaningLogResponse>> listImportJobCleaningLogs(@PathVariable UUID id) {
+        return ApiResponse.success(etlService.listCleaningLogsByImportJob(id));
+    }
+
     // ===== CleaningRule endpoints =====
 
     @PostMapping("/cleaning-rules")
@@ -64,9 +69,14 @@ public class EtlController {
 
     @GetMapping("/cleaning-logs")
     public ApiResponse<List<CleaningLogResponse>> listCleaningLogs(
-            @RequestParam(required = false) UUID ruleId) {
+            @RequestParam(required = false) UUID ruleId,
+            @RequestParam(required = false) String sourceTable,
+            @RequestParam(required = false) UUID sourceId) {
         if (ruleId != null) {
             return ApiResponse.success(etlService.listCleaningLogsByRuleId(ruleId));
+        }
+        if ((sourceTable != null && !sourceTable.isBlank()) || sourceId != null) {
+            return ApiResponse.success(etlService.listCleaningLogsBySource(sourceTable, sourceId));
         }
         return ApiResponse.success(etlService.listCleaningLogs());
     }

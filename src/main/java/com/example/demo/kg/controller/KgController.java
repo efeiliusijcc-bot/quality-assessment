@@ -10,6 +10,8 @@ import com.example.demo.kg.dto.KgDtos.CreateKgRelationRequest;
 import com.example.demo.kg.dto.KgDtos.GatAnalysisTaskResponse;
 import com.example.demo.kg.dto.KgDtos.GatOptimizationResponse;
 import com.example.demo.kg.dto.KgDtos.GatRelationWeightResponse;
+import com.example.demo.kg.dto.KgDtos.GraphAnalysisResponse;
+import com.example.demo.kg.dto.KgDtos.GraphPathSearchResponse;
 import com.example.demo.kg.dto.KgDtos.GraphVersionResponse;
 import com.example.demo.kg.dto.KgDtos.GraphVisualizationResponse;
 import com.example.demo.kg.dto.KgDtos.KgEntityResponse;
@@ -76,8 +78,23 @@ public class KgController {
     // ─── Graph Visualization ───
 
     @GetMapping("/graph/visualization/{batchId}")
-    public ApiResponse<GraphVisualizationResponse> getGraphVisualization(@PathVariable String batchId) {
-        return ApiResponse.success(kgService.getGraphVisualization(batchId));
+    public ApiResponse<GraphVisualizationResponse> getGraphVisualization(
+            @PathVariable String batchId,
+            @RequestParam(defaultValue = "false") boolean full) {
+        return ApiResponse.success(kgService.getGraphVisualization(batchId, full));
+    }
+
+    @GetMapping("/graph/analysis/{batchId}")
+    public ApiResponse<GraphAnalysisResponse> getGraphAnalysis(@PathVariable String batchId) {
+        return ApiResponse.success(kgService.getGraphAnalysis(batchId));
+    }
+
+    @GetMapping("/graph/path/{batchId}")
+    public ApiResponse<GraphPathSearchResponse> searchGraphPath(
+            @PathVariable String batchId,
+            @RequestParam String source,
+            @RequestParam String target) {
+        return ApiResponse.success(kgService.searchGraphPath(batchId, source, target));
     }
 
     @GetMapping("/graph/reasoning/{batchId}")

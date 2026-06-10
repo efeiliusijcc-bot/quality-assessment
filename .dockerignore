@@ -1,0 +1,11 @@
+.git
+.idea
+.claude
+.codex_doc_compare
+frontend/node_modules
+frontend/dist
+target
+*.log
+*.tmp
+test_data
+部署文档-前后端分离-Nginx.md

@@ -14,7 +14,7 @@
           <p class="panel-subtitle">根据现场场景切换录入方式，所有数据优先进入统一接入链路。</p>
         </div>
         <el-tag type="success" effect="dark" round>
-          Production API
+          真实接口
         </el-tag>
       </div>
 
@@ -66,7 +66,7 @@
             </el-form>
 
             <div class="rounded-3xl border border-slate-200 bg-slate-950 p-6 text-slate-100">
-              <div class="text-sm tracking-[0.18em] text-cyan-300/70">STREAM STATUS</div>
+              <div class="text-sm tracking-[0.18em] text-cyan-300/70">采集状态</div>
               <div class="mt-5 grid gap-4">
                 <div
                   v-for="item in onlineStatusCards"
@@ -154,13 +154,13 @@
             </div>
 
             <div class="rounded-3xl border border-slate-200 bg-slate-950 p-6 text-white">
-              <div class="text-sm tracking-[0.18em] text-cyan-300/75">CURRENT PAYLOAD</div>
+              <div class="text-sm tracking-[0.18em] text-cyan-300/75">当前录入内容</div>
               <div class="mt-4 rounded-2xl bg-slate-900 p-4 font-mono text-sm leading-6 text-cyan-100">
                 <pre class="overflow-auto whitespace-pre-wrap">{{ manualPreview }}</pre>
               </div>
 
               <div v-if="manualSubmitResults.length > 0" class="mt-5">
-                <div class="text-sm tracking-[0.18em] text-cyan-300/75">SUBMISSION LOG</div>
+                <div class="text-sm tracking-[0.18em] text-cyan-300/75">提交记录</div>
                 <div class="mt-3 space-y-2">
                   <div
                     v-for="(result, idx) in manualSubmitResults"

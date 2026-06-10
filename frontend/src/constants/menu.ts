@@ -46,6 +46,11 @@ export const menus: MenuItem[] = [
     icon: 'Clock',
   },
   {
+    path: '/cleaning-rules',
+    title: '数据清洗规则',
+    icon: 'Brush',
+  },
+  {
     path: '/export',
     title: '结果筛选与资源导出',
     icon: 'DocumentCopy',

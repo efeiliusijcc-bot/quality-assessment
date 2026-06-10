@@ -158,21 +158,21 @@ public class Neo4jSyncService {
                     latestStatusByBatch.putIfAbsent(batchId, mapTaskStatus(rs));
                 });
 
-        List<ProductionBatch> batches = productionBatchRepo.findAll(Sort.by(Sort.Direction.DESC, "createdAt"));
+        List<BatchGraphSummary> batches = listBatchGraphSummariesFromPostgres();
         List<GraphSyncTaskStatus> result = new ArrayList<>();
-        for (ProductionBatch batch : batches) {
-            String batchNo = batch.getBatchNo();
+        for (BatchGraphSummary batch : batches) {
+            String batchNo = batch.batchNo();
             GraphSyncTaskStatus persisted = latestStatusByBatch.get(batchNo);
             if (persisted != null) {
                 result.add(persisted);
                 continue;
             }
 
-            GraphCounts counts = countBatchGraph(batchNo);
+            GraphCounts counts = new GraphCounts(batch.nodeCount(), batch.relationCount());
             result.add(new GraphSyncTaskStatus(
                     batchNo,
                     counts.nodeCount() > 0 ? "SUCCESS" : "PENDING",
-                    counts.nodeCount() > 0 ? "NEO4J_SCAN" : "NOT_SYNCED",
+                    counts.nodeCount() > 0 ? "POSTGRES_GRAPH" : "NOT_SYNCED",
                     null,
                     null,
                     null,
@@ -252,6 +252,40 @@ public class Neo4jSyncService {
     }
 
     private record GraphCounts(int nodeCount, int relationCount) {}
+
+    private record BatchGraphSummary(String batchNo, int nodeCount, int relationCount) {}
+
+    private List<BatchGraphSummary> listBatchGraphSummariesFromPostgres() {
+        return jdbcTemplate.query("""
+                SELECT pb.batch_no,
+                       1
+                       + COUNT(DISTINCT pu.unit_id)
+                       + COUNT(DISTINCT pr.run_id)
+                       + COUNT(DISTINCT pv.value_id)
+                       + COUNT(DISTINCT qm.measurement_id)
+                       + COUNT(DISTINCT it.inspection_id)
+                       + COUNT(DISTINCT dr.defect_id) AS node_count,
+                       COUNT(DISTINCT pu.unit_id)
+                       + COUNT(DISTINCT pr.run_id)
+                       + COUNT(DISTINCT pv.value_id)
+                       + COUNT(DISTINCT qm.measurement_id)
+                       + COUNT(DISTINCT it.inspection_id)
+                       + COUNT(DISTINCT dr.defect_id) AS relation_count
+                FROM prod.production_batch pb
+                LEFT JOIN prod.product_unit pu ON pu.batch_id = pb.batch_id
+                LEFT JOIN prod.process_run pr ON pr.batch_id = pb.batch_id
+                LEFT JOIN prod.parameter_value pv ON pv.run_id = pr.run_id
+                LEFT JOIN qc.quality_measurement qm ON qm.run_id = pr.run_id
+                LEFT JOIN qc.inspection_task it ON it.run_id = pr.run_id
+                LEFT JOIN qc.defect_record dr ON dr.inspection_id = it.inspection_id
+                GROUP BY pb.batch_no, pb.created_at
+                ORDER BY pb.created_at DESC
+                """,
+                (rs, rowNum) -> new BatchGraphSummary(
+                        rs.getString("batch_no"),
+                        rs.getInt("node_count"),
+                        rs.getInt("relation_count")));
+    }
 
     private GraphCounts countBatchGraph(String batchId) {
         if (batchId == null || batchId.isBlank()) {

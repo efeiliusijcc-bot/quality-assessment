@@ -4,12 +4,16 @@
     class="relative overflow-hidden rounded-[24px] border border-cyan-400/15 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.18),transparent_30%),linear-gradient(180deg,#0f172a,#020617)]"
   >
     <img
+      v-if="imageUrl"
       ref="imageRef"
       :src="imageUrl"
       :alt="alt"
       class="block h-full w-full object-contain"
       @load="handleImageLoad"
     />
+    <div v-else class="flex h-full min-h-[360px] items-center justify-center text-sm text-slate-400">
+      暂无图像预览
+    </div>
 
     <div class="pointer-events-none absolute inset-0">
       <div
@@ -22,7 +26,7 @@
           class="absolute left-0 top-0 -translate-y-full whitespace-nowrap rounded-md px-2 py-1 text-xs font-semibold text-white"
           :style="{ backgroundColor: defect.palette.labelBg }"
         >
-          {{ defect.label }} {{ Math.round(defect.confidence * 100) }}%
+          {{ defect.label }} {{ formatConfidence(defect.confidence) }}
         </span>
       </div>
     </div>
@@ -32,7 +36,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue';
 
-export type DefectLevel = '严重' | '中等' | '轻微';
+export type DefectLevel = 'severe' | 'moderate' | 'minor' | 'normal';
 
 export interface DefectViewerItem {
   id?: string | number;
@@ -72,43 +76,49 @@ const resolveLevel = (item: DefectViewerItem): DefectLevel => {
   if (item.level) {
     return item.level;
   }
-
-  if (item.confidence >= 0.95) {
-    return '严重';
+  if (item.confidence >= 0.9) {
+    return 'severe';
   }
-
-  if (item.confidence >= 0.88) {
-    return '中等';
+  if (item.confidence >= 0.82) {
+    return 'moderate';
   }
-
-  return '轻微';
+  if (item.confidence >= 0.72) {
+    return 'minor';
+  }
+  return 'normal';
 };
 
 const paletteMap: Record<DefectLevel, { border: string; labelBg: string }> = {
-  严重: {
+  severe: {
     border: '#ef4444',
     labelBg: '#b91c1c',
   },
-  中等: {
+  moderate: {
     border: '#f59e0b',
     labelBg: '#b45309',
   },
-  轻微: {
+  minor: {
     border: '#eab308',
     labelBg: '#a16207',
+  },
+  normal: {
+    border: '#22c55e',
+    labelBg: '#15803d',
   },
 };
 
 const normalizedDefects = computed<NormalizedDefect[]>(() =>
-  props.defects.map((item, index) => {
-    const level = resolveLevel(item);
-    return {
-      ...item,
-      id: item.id ?? `${item.label}-${index}`,
-      level,
-      palette: paletteMap[level],
-    };
-  }),
+  props.defects
+    .filter((item) => item.bbox.length === 4 && item.bbox[2] > 0 && item.bbox[3] > 0)
+    .map((item, index) => {
+      const level = resolveLevel(item);
+      return {
+        ...item,
+        id: item.id ?? `${item.label}-${index}`,
+        level,
+        palette: paletteMap[level],
+      };
+    }),
 );
 
 const syncRenderedSize = () => {
@@ -142,8 +152,22 @@ const handleImageLoad = () => {
   }
 };
 
+const isPercentBox = ([x, y, width, height]: [number, number, number, number]) =>
+  x >= 0 && y >= 0 && width >= 0 && height >= 0 && x + width <= 100 && y + height <= 100;
+
 const getBoxStyle = (defect: NormalizedDefect) => {
   const [x, y, width, height] = defect.bbox;
+
+  if (isPercentBox(defect.bbox)) {
+    return {
+      left: `${x}%`,
+      top: `${y}%`,
+      width: `${width}%`,
+      height: `${height}%`,
+      borderColor: defect.palette.border,
+    };
+  }
+
   const scaleX = renderedSize.value.width / naturalSize.value.width;
   const scaleY = renderedSize.value.height / naturalSize.value.height;
 
@@ -155,6 +179,8 @@ const getBoxStyle = (defect: NormalizedDefect) => {
     borderColor: defect.palette.border,
   };
 };
+
+const formatConfidence = (value: number) => `${Math.round(value * 100)}%`;
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect();

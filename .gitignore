@@ -36,3 +36,6 @@ build/
 
 ### Claude Code ###
 .claude/
+
+### Codex temporary files ###
+.codex_doc_compare/

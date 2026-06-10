@@ -13,6 +13,13 @@ export interface GatAttentionEdge {
   relationType: string;
 }
 
+export interface GatImportantItem {
+  name: string;
+  category: string;
+  score: number;
+  reason: string;
+}
+
 export interface GatOptimizationResponse {
   batchId: string;
   nodeCount: number;
@@ -21,6 +28,10 @@ export interface GatOptimizationResponse {
   embeddingDim: number;
   nodeEmbeddings: GatNodeEmbeddingEntry[];
   attentionEdges: GatAttentionEdge[];
+  topParameters: GatImportantItem[];
+  topDefects: GatImportantItem[];
+  topProcessSteps: GatImportantItem[];
+  explanationSummary: string;
   summary: string;
 }
 
@@ -53,12 +64,67 @@ export interface GraphVisualizationResponse {
   edges: GraphVisualizationEdge[];
 }
 
-export const fetchGraphVisualization = async (batchId: string): Promise<GraphVisualizationResponse> => {
+export interface GraphAssociationRelation {
+  source: string;
+  target: string;
+  relationType: string;
+  sourceType: string;
+  targetType: string;
+  support: number;
+  confidence: number;
+  lift: number;
+  reason: string;
+}
+
+export interface GraphFilterOptions {
+  defects: string[];
+  processSteps: string[];
+  parameters: string[];
+  relationTypes: string[];
+}
+
+export interface GraphAnalysisResponse {
+  batchId: string;
+  ruleRelations: GraphAssociationRelation[];
+  aprioriRelations: GraphAssociationRelation[];
+  filterOptions: GraphFilterOptions;
+}
+
+export interface GraphPathSearchResponse {
+  batchId: string;
+  source: string;
+  target: string;
+  nodes: GraphVisualizationNode[];
+  edges: GraphVisualizationEdge[];
+  summary: string;
+}
+
+export const fetchGraphVisualization = async (batchId: string, full = false): Promise<GraphVisualizationResponse> => {
   if (!batchId) {
     return { nodes: [], edges: [] };
   }
   return request<GraphVisualizationResponse>({
     url: `/graph/visualization/${batchId}`,
     method: 'GET',
+    params: { full },
+  });
+};
+
+export const fetchGraphAnalysis = async (batchId: string): Promise<GraphAnalysisResponse> => {
+  return request<GraphAnalysisResponse>({
+    url: `/graph/analysis/${batchId}`,
+    method: 'GET',
+  });
+};
+
+export const searchGraphPath = async (
+  batchId: string,
+  source: string,
+  target: string,
+): Promise<GraphPathSearchResponse> => {
+  return request<GraphPathSearchResponse>({
+    url: `/graph/path/${batchId}`,
+    method: 'GET',
+    params: { source, target },
   });
 };

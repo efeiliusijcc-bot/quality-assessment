@@ -115,7 +115,7 @@
           </div>
 
           <div class="mt-6 rounded-3xl border border-slate-200 bg-slate-950 p-5 text-slate-100">
-            <div class="text-sm tracking-[0.18em] text-cyan-300/75">OPTIMIZATION SUMMARY</div>
+            <div class="text-sm tracking-[0.18em] text-cyan-300/75">优化摘要</div>
             <div class="mt-4 grid gap-4 md:grid-cols-3">
               <div
                 v-for="item in dashboard.optimizationSummary"
@@ -167,7 +167,7 @@
           </div>
 
           <div class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-            <div class="mb-3 text-sm font-medium text-amber-700">图谱优化依据 optimizationHints</div>
+            <div class="mb-3 text-sm font-medium text-amber-700">图谱优化依据</div>
             <div v-if="uniqueOptimizationHints.length > 0" class="grid gap-2">
               <div
                 v-for="(hint, index) in uniqueOptimizationHints"
@@ -211,6 +211,60 @@
           <div class="text-xs text-emerald-600">边数: {{ gatResult.edgeCount }}</div>
           <div class="text-xs text-emerald-600">注意力头: {{ gatResult.attentionHeads }}</div>
           <div class="text-xs text-emerald-600">嵌入维度: {{ gatResult.embeddingDim }}</div>
+        </div>
+        <div class="mt-4 rounded-xl border border-emerald-200 bg-white/80 p-3 text-sm leading-6 text-emerald-950">
+          {{ gatResult.explanationSummary }}
+        </div>
+        <div class="mt-4 grid gap-4 lg:grid-cols-3">
+          <div class="rounded-2xl border border-emerald-200 bg-white/80 p-4">
+            <div class="text-sm font-semibold text-emerald-800">重点参数</div>
+            <div class="mt-3 grid gap-2">
+              <div v-for="item in gatResult.topParameters.slice(0, 5)" :key="`param-${item.name}`" class="rounded-xl bg-emerald-50 px-3 py-2">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-sm font-medium text-slate-900">{{ item.name }}</span>
+                  <span class="text-xs text-emerald-700">{{ item.score.toFixed(3) }}</span>
+                </div>
+                <div class="mt-1 text-xs leading-5 text-slate-500">{{ item.reason }}</div>
+              </div>
+              <div v-if="gatResult.topParameters.length === 0" class="text-xs text-slate-400">暂无参数信号。</div>
+            </div>
+          </div>
+          <div class="rounded-2xl border border-rose-200 bg-white/80 p-4">
+            <div class="text-sm font-semibold text-rose-800">重点缺陷</div>
+            <div class="mt-3 grid gap-2">
+              <div v-for="item in gatResult.topDefects.slice(0, 5)" :key="`defect-${item.name}`" class="rounded-xl bg-rose-50 px-3 py-2">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-sm font-medium text-slate-900">{{ item.name }}</span>
+                  <span class="text-xs text-rose-700">{{ item.score.toFixed(3) }}</span>
+                </div>
+                <div class="mt-1 text-xs leading-5 text-slate-500">{{ item.reason }}</div>
+              </div>
+              <div v-if="gatResult.topDefects.length === 0" class="text-xs text-slate-400">暂无缺陷信号。</div>
+            </div>
+          </div>
+          <div class="rounded-2xl border border-sky-200 bg-white/80 p-4">
+            <div class="text-sm font-semibold text-sky-800">重点工序</div>
+            <div class="mt-3 grid gap-2">
+              <div v-for="item in gatResult.topProcessSteps.slice(0, 5)" :key="`step-${item.name}`" class="rounded-xl bg-sky-50 px-3 py-2">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-sm font-medium text-slate-900">{{ item.name }}</span>
+                  <span class="text-xs text-sky-700">{{ item.score.toFixed(3) }}</span>
+                </div>
+                <div class="mt-1 text-xs leading-5 text-slate-500">{{ item.reason }}</div>
+              </div>
+              <div v-if="gatResult.topProcessSteps.length === 0" class="text-xs text-slate-400">暂无工序信号。</div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 overflow-hidden rounded-2xl border border-emerald-200 bg-white/80">
+          <el-table :data="topGatAttentionEdges" size="small" stripe>
+            <el-table-column prop="from" label="来源节点" min-width="160" />
+            <el-table-column prop="to" label="目标节点" min-width="160" />
+            <el-table-column prop="relationType" label="关系类型" min-width="160" />
+            <el-table-column label="注意力权重" width="120">
+              <template #default="{ row }">{{ row.attentionWeight.toFixed(3) }}</template>
+            </el-table-column>
+          </el-table>
         </div>
       </div>
 
@@ -340,6 +394,9 @@ const threshold = computed(() => dashboard.value.threshold);
 const showOptimization = computed(() => predictedProbability.value < threshold.value);
 const stepChainLabel = computed(() => dashboard.value.graphReasoning.stepChain.join(' -> ') || '暂无');
 const uniqueOptimizationHints = computed(() => [...new Set(dashboard.value.graphReasoning.optimizationHints)]);
+const topGatAttentionEdges = computed(() =>
+  gatResult.value ? [...gatResult.value.attentionEdges].sort((a, b) => b.attentionWeight - a.attentionWeight).slice(0, 8) : [],
+);
 
 const loadHistory = async () => {
   historyLoading.value = true;

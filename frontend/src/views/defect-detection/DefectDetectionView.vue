@@ -2,7 +2,7 @@
   <div class="space-y-6">
     <PageIntroCard
       title="缺陷识别大屏"
-      description="左侧提供图像/视频检测渲染区并预留 Bounding Box 叠层，右侧展示 ResNet 模型识别结果与缺陷统计。"
+      description="展示图像和视频检测结果、缺陷定位框、模型置信度与批量检测记录。"
       badge="DETECTION"
       :metrics="metrics"
     />
@@ -12,7 +12,7 @@
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="panel-title">检测媒体视窗</h2>
-            <p class="panel-subtitle">支持图像和视频两种检测载体，边界框层可直接挂接后续 AI 推理结果。</p>
+            <p class="panel-subtitle">支持图像和视频两类检测载体，边界框层直接呈现后端推理结果。</p>
           </div>
           <el-segmented v-model="activeMediaType" :options="mediaTypeOptions" />
         </div>
@@ -32,18 +32,22 @@
               @click="activeSampleId = sample.id"
             >
               <div class="flex items-center justify-between gap-3">
-                <div class="font-semibold text-slate-900">{{ sample.name }}</div>
+                <div class="truncate font-semibold text-slate-900">{{ sample.name }}</div>
                 <el-tag :type="sample.mediaType === 'image' ? 'primary' : 'success'" round>
                   {{ sample.mediaType === 'image' ? '图像' : '视频' }}
                 </el-tag>
               </div>
-              <div class="mt-2 text-sm text-slate-500">{{ sample.batchNo }}</div>
-              <div class="mt-3 text-xs text-slate-400">缺陷数：{{ sample.results.length }}</div>
+              <div class="mt-2 text-sm text-slate-500">{{ sample.batchNo || '--' }}</div>
+              <div class="mt-3 text-xs text-slate-400">缺陷数：{{ defectCount(sample) }}</div>
             </button>
+
+            <div v-if="filteredSamples.length === 0" class="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm text-slate-400">
+              暂无{{ activeMediaType === 'image' ? '图像' : '视频' }}样本
+            </div>
           </div>
 
           <div class="rounded-[28px] border border-slate-200 bg-slate-950 p-5">
-            <div class="media-stage relative overflow-hidden rounded-[24px] border border-cyan-400/15 bg-[radial-gradient(circle_at_top,rgba(14,165,233,0.18),transparent_30%),linear-gradient(180deg,#0f172a,#020617)]">
+            <div class="media-stage relative overflow-hidden rounded-[24px] border border-cyan-400/15 bg-slate-950">
               <template v-if="currentSample.mediaType === 'image'">
                 <DefectViewer
                   :image-url="currentSample.preview"
@@ -58,7 +62,7 @@
                     <VideoPlay />
                   </el-icon>
                   <div class="mt-4 text-lg font-semibold">{{ currentSample.name }}</div>
-                  <div class="mt-2 text-sm text-slate-400">视频流占位区，后续可接入实时帧渲染</div>
+                  <div class="mt-2 text-sm text-slate-400">视频流预览区，可接入实时帧检测结果。</div>
                 </div>
               </template>
             </div>
@@ -82,11 +86,9 @@
         <div class="flex items-center justify-between gap-4">
           <div>
             <h2 class="panel-title">识别结果面板</h2>
-            <p class="panel-subtitle">展示 ResNet 模型的分类输出结果，可继续扩展人工复核与复判入口。</p>
+            <p class="panel-subtitle">展示模型分类、缺陷等级、置信度与定位描述，供人工复核和追溯。</p>
           </div>
-          <el-tag :type="currentSample.results.length > 2 ? 'danger' : 'warning'" effect="dark" round>
-            风险等级 {{ riskLevel }}
-          </el-tag>
+          <el-tag :type="riskTagType" effect="dark" round>风险等级 {{ riskLevelLabel }}</el-tag>
         </div>
 
         <div class="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -94,13 +96,13 @@
             <el-table-column prop="category" label="缺陷类别" min-width="120" />
             <el-table-column prop="level" label="缺陷等级" min-width="100">
               <template #default="{ row }">
-                <el-tag :type="row.level === '严重' ? 'danger' : 'warning'" round>
-                  {{ row.level }}
+                <el-tag :type="levelTagType(row.level)" round>
+                  {{ levelLabel(row.level) }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column prop="confidence" label="置信度" min-width="100">
-              <template #default="{ row }">{{ row.confidence }}%</template>
+              <template #default="{ row }">{{ formatConfidence(row.confidence) }}</template>
             </el-table-column>
             <el-table-column prop="location" label="位置描述" min-width="140" />
           </el-table>
@@ -135,7 +137,7 @@
       <div class="flex items-center justify-between gap-4">
         <div>
           <h2 class="panel-title">批量图像检测</h2>
-          <p class="panel-subtitle">上传多张图像进行批量缺陷检测，检测结果以列表形式展示。</p>
+          <p class="panel-subtitle">选择多张图像进行批量缺陷检测，检测结果以列表形式展示。</p>
         </div>
       </div>
 
@@ -155,7 +157,7 @@
               <UploadFilled />
             </el-icon>
             <div class="mt-4 text-lg font-medium text-slate-50">拖拽图像到此处或点击上传</div>
-            <div class="mt-2 text-sm text-slate-400">支持多张图片批量上传检测</div>
+            <div class="mt-2 text-sm text-slate-400">支持多张图片批量检测</div>
           </el-upload>
 
           <div class="mt-4 flex justify-center gap-3">
@@ -179,23 +181,20 @@
             <el-table :data="batchResults" stripe max-height="400">
               <el-table-column prop="name" label="样本名称" min-width="140" />
               <el-table-column prop="batchNo" label="批次号" min-width="120" />
-              <el-table-column label="缺陷类别" min-width="100">
+              <el-table-column label="缺陷类别" min-width="110">
                 <template #default="{ row }">
                   {{ row.results[0]?.category ?? '--' }}
                 </template>
               </el-table-column>
               <el-table-column label="置信度" min-width="100">
                 <template #default="{ row }">
-                  {{ row.results[0]?.confidence?.toFixed(1) ?? '--' }}%
+                  {{ row.results[0] ? formatConfidence(row.results[0].confidence) : '--' }}
                 </template>
               </el-table-column>
               <el-table-column label="风险等级" min-width="100">
                 <template #default="{ row }">
-                  <el-tag
-                    :type="row.results[0]?.level === '严重' ? 'danger' : row.results[0]?.level === '中等' ? 'warning' : 'info'"
-                    round
-                  >
-                    {{ row.results[0]?.level ?? '待定' }}
+                  <el-tag :type="levelTagType(row.results[0]?.level)" round>
+                    {{ levelLabel(row.results[0]?.level) }}
                   </el-tag>
                 </template>
               </el-table-column>
@@ -217,44 +216,22 @@ import { UploadFilled, VideoPlay } from '@element-plus/icons-vue';
 import { ElMessage, type UploadFile } from 'element-plus';
 
 import { batchDetectDefects, fetchDefectSamples, fetchDefectStatistics, type DefectSampleResponse } from '@/api/defect';
-import DefectViewer, { type DefectViewerItem } from '@/components/defect/DefectViewer.vue';
+import DefectViewer, { type DefectLevel, type DefectViewerItem } from '@/components/defect/DefectViewer.vue';
 import PageIntroCard from '@/components/dashboard/PageIntroCard.vue';
 
-const metrics = ref([
-  { label: '模型版本', value: '--', extra: '加载中' },
-  { label: '已识别样本', value: '--', extra: '加载中' },
-  { label: '平均置信度', value: '--', extra: '加载中' },
-]);
-
-const loadMetrics = async () => {
-  try {
-    const stats = await fetchDefectStatistics();
-    metrics.value = [
-      { label: '模型版本', value: stats.modelVersion || '--', extra: '推理引擎已预留' },
-      { label: '已识别样本', value: String(stats.totalSamples), extra: '数据库统计' },
-      { label: '平均置信度', value: `${stats.avgConfidence.toFixed(1)}%`, extra: '缺陷识别统计' },
-    ];
-  } catch {
-    // keep defaults
-  }
-};
-
-const mediaTypeOptions = [
-  { label: '图像', value: 'image' },
-  { label: '视频', value: 'video' },
-];
+type MediaType = 'image' | 'video';
 
 interface DetectionResult {
   category: string;
-  level: '中等' | '严重';
+  level: DefectLevel;
   confidence: number;
   location: string;
 }
 
 interface SampleItem {
-  id: number;
+  id: string;
   name: string;
-  mediaType: 'image' | 'video';
+  mediaType: MediaType;
   batchNo: string;
   preview: string;
   results: DetectionResult[];
@@ -262,8 +239,19 @@ interface SampleItem {
   summary: string;
 }
 
+const metrics = ref([
+  { label: '模型版本', value: '--', extra: '加载中' },
+  { label: '已识别样本', value: '--', extra: '加载中' },
+  { label: '平均置信度', value: '--', extra: '加载中' },
+]);
+
+const mediaTypeOptions = [
+  { label: '图像', value: 'image' },
+  { label: '视频', value: 'video' },
+];
+
 const fallbackSample: SampleItem = {
-  id: 0,
+  id: 'empty',
   name: '暂无样本',
   mediaType: 'image',
   batchNo: '--',
@@ -274,38 +262,92 @@ const fallbackSample: SampleItem = {
 };
 
 const samples = ref<SampleItem[]>([]);
+const activeMediaType = ref<MediaType>('image');
+const activeSampleId = ref('empty');
+const batchFiles = ref<File[]>([]);
+const batchDetecting = ref(false);
+const batchResults = ref<DefectSampleResponse[]>([]);
+
+const normalizeLevel = (level?: string): DefectLevel => {
+  switch ((level ?? '').toLowerCase()) {
+    case 'severe':
+    case 'critical':
+    case 'high':
+      return 'severe';
+    case 'moderate':
+    case 'medium':
+      return 'moderate';
+    case 'minor':
+    case 'low':
+      return 'minor';
+    case 'normal':
+    case 'pass':
+    case 'ok':
+      return 'normal';
+    default:
+      return 'minor';
+  }
+};
+
+const normalizeConfidence = (value: number) => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return value > 1 ? value / 100 : value;
+};
+
+const toSampleItem = (item: DefectSampleResponse, index: number): SampleItem => ({
+  id: item.id || `sample-${index}`,
+  name: item.name || `样本 ${index + 1}`,
+  mediaType: item.mediaType === 'video' ? 'video' : 'image',
+  batchNo: item.batchNo || '--',
+  preview: item.imageUrl || '',
+  results: item.results.map((result) => ({
+    category: result.category,
+    level: normalizeLevel(result.level),
+    confidence: normalizeConfidence(result.confidence),
+    location: result.location || '--',
+  })),
+  defects: item.defects.map((defect, defectIndex) => ({
+    id: `${item.id || index}-${defectIndex}`,
+    label: defect.label,
+    level: normalizeLevel(defect.level),
+    confidence: normalizeConfidence(defect.confidence),
+    bbox: [
+      defect.bbox[0] ?? 0,
+      defect.bbox[1] ?? 0,
+      defect.bbox[2] ?? 0,
+      defect.bbox[3] ?? 0,
+    ],
+  })),
+  summary: item.summary || '暂无模型结论',
+});
+
+const loadMetrics = async () => {
+  try {
+    const stats = await fetchDefectStatistics();
+    metrics.value = [
+      { label: '模型版本', value: stats.modelVersion || '--', extra: '当前推理配置' },
+      { label: '已识别样本', value: String(stats.totalSamples), extra: '数据库统计' },
+      { label: '平均置信度', value: formatConfidence(normalizeConfidence(stats.avgConfidence)), extra: '检测任务均值' },
+    ];
+  } catch {
+    metrics.value = [
+      { label: '模型版本', value: '--', extra: '加载失败' },
+      { label: '已识别样本', value: '--', extra: '加载失败' },
+      { label: '平均置信度', value: '--', extra: '加载失败' },
+    ];
+  }
+};
 
 const loadSamples = async () => {
   try {
     const data = await fetchDefectSamples();
-    samples.value = data.map((item, index) => ({
-      id: index + 1,
-      name: item.name,
-      mediaType: (item.mediaType === 'video' ? 'video' : 'image') as 'image' | 'video',
-      batchNo: item.batchNo,
-      preview: item.imageUrl || '',
-      results: item.results.map(r => ({
-        category: r.category,
-        level: r.level as '中等' | '严重',
-        confidence: r.confidence,
-        location: r.location,
-      })),
-      defects: item.defects.map((d, di) => ({
-        id: di + 1,
-        label: d.label,
-        level: d.level as '中等' | '严重',
-        confidence: d.confidence,
-        bbox: [d.bbox[0] ?? 0, d.bbox[1] ?? 0, d.bbox[2] ?? 0, d.bbox[3] ?? 0] as [number, number, number, number],
-      })),
-      summary: item.summary,
-    }));
+    samples.value = data.map(toSampleItem);
   } catch {
     samples.value = [];
   }
 };
-
-const activeMediaType = ref<'image' | 'video'>('image');
-const activeSampleId = ref(1);
 
 const filteredSamples = computed(() =>
   samples.value.filter((item) => item.mediaType === activeMediaType.value),
@@ -320,47 +362,85 @@ watch(
   filteredSamples,
   (list) => {
     const firstSample = list[0];
-    if (!list.some((item) => item.id === activeSampleId.value) && firstSample) {
-      activeSampleId.value = firstSample.id;
+    if (!list.some((item) => item.id === activeSampleId.value)) {
+      activeSampleId.value = firstSample?.id ?? 'empty';
     }
   },
   { immediate: true },
 );
 
-const riskLevel = computed(() =>
-  currentSample.value.results.some((item) => item.level === '严重') ? '高' : '中',
-);
+const defectCount = (sample: SampleItem) =>
+  sample.results.filter((item) => item.level !== 'normal' && item.category !== 'normal').length;
 
-const detectionStats = computed(() => [
-  {
-    label: '检测载体',
-    value: currentSample.value.mediaType === 'image' ? '静态图像' : '视频流',
-    tip: currentSample.value.batchNo,
-  },
-  {
-    label: '缺陷数量',
-    value: `${currentSample.value.results.length}`,
-    tip: '当前样本',
-  },
-  {
-    label: '最高置信度',
-    value: `${Math.max(...currentSample.value.results.map((item) => item.confidence)).toFixed(1)}%`,
-    tip: '模型输出',
-  },
-]);
+const riskLevel = computed<DefectLevel>(() => {
+  const levels = currentSample.value.results.map((item) => item.level);
+  if (levels.includes('severe')) return 'severe';
+  if (levels.includes('moderate')) return 'moderate';
+  if (levels.includes('minor')) return 'minor';
+  return 'normal';
+});
+
+const riskLevelLabel = computed(() => levelLabel(riskLevel.value));
+const riskTagType = computed(() => levelTagType(riskLevel.value));
+
+const detectionStats = computed(() => {
+  const confidences = currentSample.value.results.map((item) => item.confidence);
+  const maxConfidence = confidences.length ? Math.max(...confidences) : 0;
+  return [
+    {
+      label: '检测载体',
+      value: currentSample.value.mediaType === 'image' ? '静态图像' : '视频流',
+      tip: currentSample.value.batchNo,
+    },
+    {
+      label: '缺陷数量',
+      value: String(defectCount(currentSample.value)),
+      tip: '当前样本',
+    },
+    {
+      label: '最高置信度',
+      value: formatConfidence(maxConfidence),
+      tip: '模型输出',
+    },
+  ];
+});
 
 const pipelineStatus = computed(() => [
-  { label: '预处理模块', value: '已完成图像增强与归一化' },
-  { label: '分类推理模块', value: 'ResNet 输出已回填至前端结果表格' },
-  { label: '复核建议', value: riskLevel.value === '高' ? '建议转人工复判' : '建议继续追踪样本' },
+  { label: '输入预处理', value: '图像元数据已提交至检测接口' },
+  { label: '推理模块', value: '支持外部模型服务，未配置时使用规则降级' },
+  { label: '复核建议', value: riskLevel.value === 'severe' ? '建议转人工复核' : '建议继续追踪样本' },
 ]);
 
-const batchFiles = ref<File[]>([]);
-const batchDetecting = ref(false);
-const batchResults = ref<DefectSampleResponse[]>([]);
+const levelLabel = (level?: string) => {
+  switch (normalizeLevel(level)) {
+    case 'severe':
+      return '严重';
+    case 'moderate':
+      return '中等';
+    case 'minor':
+      return '轻微';
+    case 'normal':
+      return '正常';
+  }
+};
+
+const levelTagType = (level?: string) => {
+  switch (normalizeLevel(level)) {
+    case 'severe':
+      return 'danger';
+    case 'moderate':
+      return 'warning';
+    case 'minor':
+      return 'info';
+    case 'normal':
+      return 'success';
+  }
+};
+
+const formatConfidence = (value: number) => `${(normalizeConfidence(value) * 100).toFixed(1)}%`;
 
 const handleBatchFileChange = (uploadFile: UploadFile) => {
-  if (uploadFile.raw) {
+  if (uploadFile.raw && !batchFiles.value.includes(uploadFile.raw)) {
     batchFiles.value.push(uploadFile.raw);
   }
 };
@@ -387,15 +467,20 @@ const submitBatchDetect = async () => {
 
   batchDetecting.value = true;
   try {
+    const batchNo = `BATCH-${Date.now()}`;
     const items = batchFiles.value.map((file) => ({
       name: file.name,
-      batchNo: `BATCH-${Date.now()}`,
+      batchNo,
       imageUrl: file.name,
     }));
 
     const result = await batchDetectDefects(items);
     batchResults.value = result.results;
+    samples.value = [...result.results.map(toSampleItem), ...samples.value];
+    activeMediaType.value = 'image';
+    activeSampleId.value = samples.value[0]?.id ?? 'empty';
     ElMessage.success(result.message);
+    void loadMetrics();
   } catch {
     ElMessage.error('批量检测失败');
   } finally {

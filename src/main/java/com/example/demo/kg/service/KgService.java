@@ -13,9 +13,14 @@ import com.example.demo.kg.dto.KgDtos.CreateKgEntityRequest;
 import com.example.demo.kg.dto.KgDtos.CreateKgRelationRequest;
 import com.example.demo.kg.dto.KgDtos.GatAnalysisTaskResponse;
 import com.example.demo.kg.dto.KgDtos.GatAttentionEdge;
+import com.example.demo.kg.dto.KgDtos.GatImportantItem;
 import com.example.demo.kg.dto.KgDtos.GatNodeEmbeddingEntry;
 import com.example.demo.kg.dto.KgDtos.GatOptimizationResponse;
 import com.example.demo.kg.dto.KgDtos.GatRelationWeightResponse;
+import com.example.demo.kg.dto.KgDtos.GraphAnalysisResponse;
+import com.example.demo.kg.dto.KgDtos.GraphAssociationRelation;
+import com.example.demo.kg.dto.KgDtos.GraphFilterOptions;
+import com.example.demo.kg.dto.KgDtos.GraphPathSearchResponse;
 import com.example.demo.kg.dto.KgDtos.GraphVersionResponse;
 import com.example.demo.kg.dto.KgDtos.GraphVisualizationEdge;
 import com.example.demo.kg.dto.KgDtos.GraphVisualizationNode;
@@ -39,14 +44,17 @@ import org.neo4j.driver.types.Node;
 import org.neo4j.driver.types.Relationship;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -58,6 +66,7 @@ import java.util.stream.Collectors;
 public class KgService {
 
     private static final Logger log = LoggerFactory.getLogger(KgService.class);
+    private static final int MAX_GAT_NODES = 160;
 
     private final GraphVersionRepository graphVersionRepository;
     private final KgEntityRepository kgEntityRepository;
@@ -66,6 +75,7 @@ public class KgService {
     private final GatRelationWeightRepository gatRelationWeightRepository;
     private final ProductionBatchRepository productionBatchRepository;
     private final Driver neo4jDriver;
+    private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
     public KgService(GraphVersionRepository graphVersionRepository,
@@ -75,6 +85,7 @@ public class KgService {
                      GatRelationWeightRepository gatRelationWeightRepository,
                      ProductionBatchRepository productionBatchRepository,
                      Driver neo4jDriver,
+                     JdbcTemplate jdbcTemplate,
                      ObjectMapper objectMapper) {
         this.graphVersionRepository = graphVersionRepository;
         this.kgEntityRepository = kgEntityRepository;
@@ -83,6 +94,7 @@ public class KgService {
         this.gatRelationWeightRepository = gatRelationWeightRepository;
         this.productionBatchRepository = productionBatchRepository;
         this.neo4jDriver = neo4jDriver;
+        this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
     }
 
@@ -220,16 +232,28 @@ public class KgService {
 
     @Transactional
     public GatOptimizationResponse runGatOptimization(String batchId) {
-        // 1. Collect graph data from PostgreSQL
         UUID graphVersionId;
         try {
             graphVersionId = UUID.fromString(batchId);
         } catch (IllegalArgumentException e) {
-            throw new BusinessException(400, "Invalid batchId format, expected UUID");
+            Optional<ProductionBatch> batch = productionBatchRepository.findByBatchNo(batchId);
+            if (batch.isEmpty()) {
+                throw new BusinessException(404, "No batch found for batchId=" + batchId);
+            }
+            GraphVisualizationResponse graph = buildGatGraphFromPostgres(batchId);
+            return runGatOnVisualizationGraph(batchId, batch.get().getBatchId(), graph);
         }
 
         List<KgEntity> entities = kgEntityRepository.findByGraphVersionId(graphVersionId);
         List<KgRelation> relations = kgRelationRepository.findByGraphVersionId(graphVersionId);
+
+        if (entities.isEmpty()) {
+            Optional<ProductionBatch> batch = productionBatchRepository.findById(graphVersionId);
+            if (batch.isPresent()) {
+                GraphVisualizationResponse graph = buildGatGraphFromPostgres(batch.get().getBatchNo());
+                return runGatOnVisualizationGraph(batch.get().getBatchNo(), batch.get().getBatchId(), graph);
+            }
+        }
 
         // 2. Try to enrich from Neo4j
         try {
@@ -287,6 +311,8 @@ public class KgService {
         // 6. Create GatAnalysisTask
         GatAnalysisTask task = new GatAnalysisTask(graphVersionId);
         task.setModelName("GAT");
+        task.setModelVersion("batch-subgraph-v1");
+        task.setInputScope("{\"scope\":\"graphVersion\",\"batchId\":\"" + batchId + "\"}");
         task.setTaskStatus("COMPLETED");
         task.setFinishedAt(Instant.now());
         gatAnalysisTaskRepository.save(task);
@@ -346,7 +372,343 @@ public class KgService {
 
         return new GatOptimizationResponse(
                 batchId, n, relations.size(), attentionHeads, embeddingDim,
-                nodeEmbeddings, attentionEdges, summary);
+                nodeEmbeddings,
+                attentionEdges,
+                summarizeImportantItems(attentionEdges, Set.of("ParameterDef", "ParameterValue", "ProcessParameter"), "parameter"),
+                summarizeImportantItems(attentionEdges, Set.of("DefectType", "DefectRecord", "Defect"), "defect"),
+                summarizeImportantItems(attentionEdges, Set.of("ProcessStep"), "process-step"),
+                buildGatExplanation(attentionEdges),
+                summary);
+    }
+
+    private GatOptimizationResponse runGatOnVisualizationGraph(
+            String batchId,
+            UUID taskScopeId,
+            GraphVisualizationResponse graph) {
+        GraphVisualizationResponse gatGraph = compactGraphForGat(graph);
+        List<GraphVisualizationNode> nodes = gatGraph.nodes();
+        List<GraphVisualizationEdge> edges = gatGraph.edges();
+        if (nodes.isEmpty()) {
+            throw new BusinessException(404, "No graph nodes found for batchId=" + batchId);
+        }
+
+        Map<String, Integer> nodeIndex = new LinkedHashMap<>();
+        List<String> nodeLabels = new ArrayList<>();
+        for (int i = 0; i < nodes.size(); i++) {
+            GraphVisualizationNode node = nodes.get(i);
+            nodeIndex.put(node.graphId(), i);
+            nodeLabels.add(node.name() != null && !node.name().isBlank() ? node.name() : node.label());
+        }
+
+        int n = nodes.size();
+        int[][] adjacency = new int[n][n];
+        for (GraphVisualizationEdge edge : edges) {
+            Integer src = nodeIndex.get(edge.from());
+            Integer tgt = nodeIndex.get(edge.to());
+            if (src != null && tgt != null) {
+                adjacency[src][tgt] = 1;
+                adjacency[tgt][src] = 1;
+            }
+        }
+
+        List<String> distinctTypes = nodes.stream().map(GraphVisualizationNode::label).distinct().toList();
+        Map<String, Integer> typeIndex = new HashMap<>();
+        for (int i = 0; i < distinctTypes.size(); i++) {
+            typeIndex.put(distinctTypes.get(i), i);
+        }
+        int featureDim = Math.max(distinctTypes.size(), 1);
+        double[][] nodeFeatures = new double[n][featureDim];
+        for (int i = 0; i < n; i++) {
+            Integer ti = typeIndex.get(nodes.get(i).label());
+            if (ti != null) {
+                nodeFeatures[i][ti] = 1.0;
+            }
+        }
+
+        GraphAttentionNetwork gat = GraphAttentionNetwork.createDefault(featureDim);
+        double[][] embeddings = gat.forward(nodeFeatures, adjacency);
+        double[][] attentionMatrix = gat.computeAttentionWeights(nodeFeatures, adjacency);
+
+        GatAnalysisTask task = new GatAnalysisTask(null);
+        task.setModelName("GAT-BATCH-SUBGRAPH");
+        task.setModelVersion("batch-subgraph-v1");
+        task.setInputScope("{\"scope\":\"batch\",\"batchId\":\"" + batchId + "\"}");
+        task.setTaskStatus("COMPLETED");
+        task.setFinishedAt(Instant.now());
+        gatAnalysisTaskRepository.save(task);
+
+        List<GatAttentionEdge> attentionEdges = new ArrayList<>();
+        Set<String> attentionEdgeKeys = new LinkedHashSet<>();
+        for (GraphVisualizationEdge edge : edges) {
+            Integer src = nodeIndex.get(edge.from());
+            Integer tgt = nodeIndex.get(edge.to());
+            if (src == null || tgt == null) {
+                continue;
+            }
+            double w = (attentionMatrix[src][tgt] + attentionMatrix[tgt][src]) / 2.0;
+            if (w > 0.0) {
+                String dedupeKey = nodeLabels.get(src) + "|" + nodeLabels.get(tgt) + "|" + edge.type();
+                if (!attentionEdgeKeys.add(dedupeKey)) {
+                    continue;
+                }
+                attentionEdges.add(new GatAttentionEdge(
+                        nodeLabels.get(src),
+                        nodeLabels.get(tgt),
+                        Math.round(w * 1_000_000.0) / 1_000_000.0,
+                        edge.type()));
+            }
+        }
+        attentionEdges = attentionEdges.stream()
+                .sorted((a, b) -> Double.compare(b.attentionWeight(), a.attentionWeight()))
+                .limit(80)
+                .toList();
+
+        List<GatNodeEmbeddingEntry> nodeEmbeddings = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            List<Double> emb = new ArrayList<>();
+            for (double v : embeddings[i]) {
+                emb.add(Math.round(v * 10000.0) / 10000.0);
+            }
+            nodeEmbeddings.add(new GatNodeEmbeddingEntry(nodes.get(i).graphId(), nodes.get(i).label(), emb));
+        }
+
+        int attentionHeads = gat.getLayers().get(0).getHeadCount();
+        int embeddingDim = gat.getEmbeddingDim();
+        String summary = String.format(
+                "GAT batch-subgraph analysis completed for %s: %d nodes, %d relationships, %d attention heads, embedding dim %d. Top attention edges indicate the strongest graph-neighborhood influences.",
+                batchId, n, edges.size(), attentionHeads, embeddingDim);
+
+        return new GatOptimizationResponse(
+                batchId, n, edges.size(), attentionHeads, embeddingDim,
+                nodeEmbeddings,
+                attentionEdges,
+                summarizeImportantItems(attentionEdges, Set.of("ParameterDef", "ParameterValue", "ProcessParameter"), "parameter"),
+                summarizeImportantItems(attentionEdges, Set.of("DefectType", "DefectRecord", "Defect"), "defect"),
+                summarizeImportantItems(attentionEdges, Set.of("ProcessStep"), "process-step"),
+                buildGatExplanation(attentionEdges),
+                summary);
+    }
+
+    private List<GatImportantItem> summarizeImportantItems(
+            List<GatAttentionEdge> attentionEdges,
+            Set<String> labelHints,
+            String category) {
+        Map<String, Double> scores = new LinkedHashMap<>();
+        for (GatAttentionEdge edge : attentionEdges) {
+            String candidate = candidateForGatCategory(edge, category);
+            if (candidate != null && !candidate.isBlank()) {
+                scores.merge(candidate, edge.attentionWeight(), Double::sum);
+            }
+        }
+        return scores.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(8)
+                .map(entry -> new GatImportantItem(
+                        entry.getKey(),
+                        category,
+                        Math.round(entry.getValue() * 1_000_000.0) / 1_000_000.0,
+                        buildImportantItemReason(category, entry.getKey(), entry.getValue())))
+                .toList();
+    }
+
+    private String candidateForGatCategory(GatAttentionEdge edge, String category) {
+        String relationType = edge.relationType();
+        if (relationType == null) {
+            return null;
+        }
+        return switch (category) {
+            case "parameter" -> {
+                if ("HAS_PARAMETER".equals(relationType)) {
+                    yield edge.to();
+                }
+                if ("ASSOCIATED_WITH_DEFECT".equals(relationType)) {
+                    yield edge.from();
+                }
+                yield null;
+            }
+            case "defect" -> {
+                if ("PRODUCES_DEFECT_RISK".equals(relationType)
+                        || "ASSOCIATED_WITH_DEFECT".equals(relationType)
+                        || "FOUND_DEFECT".equals(relationType)) {
+                    yield edge.to();
+                }
+                yield null;
+            }
+            case "process-step" -> {
+                if ("HAS_STEP".equals(relationType)) {
+                    yield edge.to();
+                }
+                if ("PRODUCES_DEFECT_RISK".equals(relationType) || "HAS_PARAMETER".equals(relationType)) {
+                    yield edge.from();
+                }
+                yield null;
+            }
+            default -> null;
+        };
+    }
+
+    private String buildImportantItemReason(String category, String name, double score) {
+        double rounded = Math.round(score * 10_000.0) / 10_000.0;
+        return switch (category) {
+            case "parameter" -> name + " has high attention through parameter-defect or step-parameter relations, score=" + rounded;
+            case "defect" -> name + " receives strong attention from process or parameter relations, score=" + rounded;
+            case "process-step" -> name + " is a high-impact process node in the current batch subgraph, score=" + rounded;
+            default -> name + " has attention score=" + rounded;
+        };
+    }
+
+    private String buildGatExplanation(List<GatAttentionEdge> attentionEdges) {
+        if (attentionEdges.isEmpty()) {
+            return "GAT did not find high-attention relations in the current batch graph.";
+        }
+        GatAttentionEdge top = attentionEdges.get(0);
+        return "GAT identified the strongest relation as " + top.from() + " -> " + top.to()
+                + " (" + top.relationType() + "), attention=" + top.attentionWeight()
+                + ". Use high-attention relations as priority evidence for parameter review and defect prevention.";
+    }
+
+    private GraphVisualizationResponse buildGatGraphFromPostgres(String batchId) {
+        Map<String, GraphVisualizationNode> nodes = new LinkedHashMap<>();
+        List<GraphVisualizationEdge> edges = new ArrayList<>();
+
+        List<Map<String, Object>> batches = jdbcTemplate.queryForList("""
+                SELECT batch_id::text AS batch_id, batch_no
+                FROM prod.production_batch
+                WHERE batch_no = ? OR batch_id::text = ?
+                LIMIT 1
+                """, batchId, batchId);
+        if (batches.isEmpty()) {
+            return new GraphVisualizationResponse(List.of(), List.of());
+        }
+
+        String batchNodeId = "ProductionBatch:" + batches.get(0).get("batch_id");
+        String batchNo = String.valueOf(batches.get(0).get("batch_no"));
+        nodes.put(batchNodeId, new GraphVisualizationNode(
+                batchNodeId,
+                "ProductionBatch",
+                batchNo,
+                Map.of("batchId", batches.get(0).get("batch_id"), "batchNo", batchNo)));
+
+        List<Map<String, Object>> steps = jdbcTemplate.queryForList("""
+                SELECT DISTINCT ps.step_id::text AS step_id, ps.step_code, ps.step_name
+                FROM prod.production_batch b
+                JOIN prod.process_run r ON r.batch_id = b.batch_id
+                JOIN core.process_step ps ON ps.step_id = r.step_id
+                WHERE b.batch_no = ? OR b.batch_id::text = ?
+                ORDER BY ps.step_code
+                """, batchId, batchId);
+        for (Map<String, Object> row : steps) {
+            String id = "ProcessStep:" + row.get("step_id");
+            nodes.put(id, new GraphVisualizationNode(
+                    id,
+                    "ProcessStep",
+                    String.valueOf(row.get("step_code")),
+                    Map.of("stepId", row.get("step_id"), "stepName", row.get("step_name"))));
+            edges.add(new GraphVisualizationEdge(batchNodeId, id, "HAS_STEP", 1.0));
+        }
+
+        List<Map<String, Object>> params = jdbcTemplate.queryForList("""
+                SELECT DISTINCT pd.param_id::text AS param_id, pd.step_id::text AS step_id, pd.param_name, pd.param_code
+                FROM prod.production_batch b
+                JOIN prod.process_run r ON r.batch_id = b.batch_id
+                JOIN prod.parameter_value pv ON pv.run_id = r.run_id
+                JOIN core.parameter_def pd ON pd.param_id = pv.param_id
+                WHERE b.batch_no = ? OR b.batch_id::text = ?
+                ORDER BY pd.param_name
+                """, batchId, batchId);
+        for (Map<String, Object> row : params) {
+            String id = "ParameterDef:" + row.get("param_id");
+            nodes.put(id, new GraphVisualizationNode(
+                    id,
+                    "ParameterDef",
+                    String.valueOf(row.get("param_name")),
+                    Map.of("paramId", row.get("param_id"), "paramCode", row.get("param_code"))));
+            String stepId = "ProcessStep:" + row.get("step_id");
+            if (nodes.containsKey(stepId)) {
+                edges.add(new GraphVisualizationEdge(stepId, id, "HAS_PARAMETER", 1.0));
+            }
+        }
+
+        List<Map<String, Object>> defects = jdbcTemplate.queryForList("""
+                SELECT DISTINCT dt.defect_type_id::text AS defect_type_id,
+                       dt.step_id::text AS step_id,
+                       dt.defect_name,
+                       COALESCE(MAX(dr.severity_level), MAX(dt.default_severity), 1) AS severity,
+                       COALESCE(AVG(dr.confidence), 0) AS confidence
+                FROM prod.production_batch b
+                JOIN prod.process_run r ON r.batch_id = b.batch_id
+                JOIN qc.inspection_task i ON i.run_id = r.run_id
+                JOIN qc.defect_record dr ON dr.inspection_id = i.inspection_id
+                JOIN qc.defect_type dt ON dt.defect_type_id = dr.defect_type_id
+                WHERE b.batch_no = ? OR b.batch_id::text = ?
+                GROUP BY dt.defect_type_id, dt.step_id, dt.defect_name
+                ORDER BY severity DESC, dt.defect_name
+                """, batchId, batchId);
+        for (Map<String, Object> row : defects) {
+            String id = "DefectType:" + row.get("defect_type_id");
+            nodes.put(id, new GraphVisualizationNode(
+                    id,
+                    "DefectType",
+                    String.valueOf(row.get("defect_name")),
+                    Map.of("defectTypeId", row.get("defect_type_id"), "severity", row.get("severity"), "confidence", row.get("confidence"))));
+            String stepId = "ProcessStep:" + row.get("step_id");
+            if (nodes.containsKey(stepId)) {
+                edges.add(new GraphVisualizationEdge(stepId, id, "PRODUCES_DEFECT_RISK", 1.0));
+            }
+            for (Map<String, Object> param : params) {
+                if (String.valueOf(param.get("step_id")).equals(String.valueOf(row.get("step_id")))) {
+                    edges.add(new GraphVisualizationEdge(
+                            "ParameterDef:" + param.get("param_id"),
+                            id,
+                            "ASSOCIATED_WITH_DEFECT",
+                            1.0));
+                }
+            }
+        }
+
+        return new GraphVisualizationResponse(new ArrayList<>(nodes.values()), dedupeVisualizationEdges(edges));
+    }
+
+    private GraphVisualizationResponse compactGraphForGat(GraphVisualizationResponse graph) {
+        List<GraphVisualizationNode> allNodes = graph.nodes();
+        if (allNodes.size() <= MAX_GAT_NODES) {
+            return new GraphVisualizationResponse(allNodes, dedupeVisualizationEdges(graph.edges()));
+        }
+
+        List<GraphVisualizationNode> selectedNodes = allNodes.stream()
+                .sorted(Comparator
+                        .comparingInt((GraphVisualizationNode node) -> gatLabelPriority(node.label()))
+                        .thenComparing(node -> node.name() != null ? node.name() : node.graphId()))
+                .limit(MAX_GAT_NODES)
+                .toList();
+        Set<String> selectedIds = selectedNodes.stream()
+                .map(GraphVisualizationNode::graphId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<GraphVisualizationEdge> selectedEdges = graph.edges().stream()
+                .filter(edge -> selectedIds.contains(edge.from()) && selectedIds.contains(edge.to()))
+                .toList();
+        return new GraphVisualizationResponse(selectedNodes, dedupeVisualizationEdges(selectedEdges));
+    }
+
+    private List<GraphVisualizationEdge> dedupeVisualizationEdges(List<GraphVisualizationEdge> edges) {
+        Map<String, GraphVisualizationEdge> unique = new LinkedHashMap<>();
+        for (GraphVisualizationEdge edge : edges) {
+            String key = edge.from() + "|" + edge.to() + "|" + edge.type();
+            unique.putIfAbsent(key, edge);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private int gatLabelPriority(String label) {
+        return switch (label) {
+            case "ProductionBatch", "Batch" -> 0;
+            case "DefectRecord", "Defect", "DefectType" -> 1;
+            case "ParameterDef", "ProcessParameter", "ParameterValue", "QualityMeasurement" -> 2;
+            case "ProcessStep", "InspectionTask" -> 3;
+            case "ProcessRun" -> 4;
+            case "ProductUnit" -> 5;
+            default -> 9;
+        };
     }
 
     // ═══════════════════════════════════════════════════════
@@ -354,6 +716,17 @@ public class KgService {
     // ═══════════════════════════════════════════════════════
 
     public GraphVisualizationResponse getGraphVisualization(String batchId) {
+        return getGraphVisualization(batchId, false);
+    }
+
+    public GraphVisualizationResponse getGraphVisualization(String batchId, boolean full) {
+        if (!full) {
+            GraphVisualizationResponse summaryGraph = buildGatGraphFromPostgres(batchId);
+            if (!summaryGraph.nodes().isEmpty()) {
+                return summaryGraph;
+            }
+        }
+
         GraphVisualizationResponse neo4jGraph = getGraphVisualizationFromNeo4j(batchId);
         if (!neo4jGraph.nodes().isEmpty()) {
             return neo4jGraph;
@@ -398,6 +771,10 @@ public class KgService {
 
         // 如果还是找不到，返回空的可视化数据
         if (entities.isEmpty()) {
+            GraphVisualizationResponse batchGraph = buildGatGraphFromPostgres(batchId);
+            if (!batchGraph.nodes().isEmpty()) {
+                return batchGraph;
+            }
             return new GraphVisualizationResponse(List.of(), List.of());
         }
 
@@ -435,9 +812,287 @@ public class KgService {
         return new GraphVisualizationResponse(nodes, edges);
     }
 
+    public GraphAnalysisResponse getGraphAnalysis(String batchId) {
+        GraphVisualizationResponse graph = getGraphVisualization(batchId);
+        Map<String, GraphVisualizationNode> nodeMap = graph.nodes().stream()
+                .collect(Collectors.toMap(GraphVisualizationNode::graphId, node -> node, (a, b) -> a, LinkedHashMap::new));
+
+        List<GraphAssociationRelation> ruleRelations = graph.edges().stream()
+                .filter(edge -> isRuleRelation(edge.type()))
+                .map(edge -> toRuleAssociation(edge, nodeMap))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .sorted(Comparator.comparing(GraphAssociationRelation::relationType)
+                        .thenComparing(GraphAssociationRelation::source)
+                        .thenComparing(GraphAssociationRelation::target))
+                .toList();
+
+        List<GraphAssociationRelation> aprioriRelations = mineAprioriRelations(batchId);
+        GraphFilterOptions filterOptions = buildGraphFilterOptions(graph);
+        return new GraphAnalysisResponse(batchId, ruleRelations, aprioriRelations, filterOptions);
+    }
+
+    public GraphPathSearchResponse searchGraphPath(String batchId, String source, String target) {
+        GraphVisualizationResponse graph = getGraphVisualization(batchId);
+        if (source == null || source.isBlank() || target == null || target.isBlank()) {
+            return new GraphPathSearchResponse(batchId, source, target, List.of(), List.of(), "source and target are required");
+        }
+
+        Map<String, GraphVisualizationNode> nodeMap = graph.nodes().stream()
+                .collect(Collectors.toMap(GraphVisualizationNode::graphId, node -> node, (a, b) -> a, LinkedHashMap::new));
+        String sourceId = findNodeIdByName(graph.nodes(), source);
+        String targetId = findNodeIdByName(graph.nodes(), target);
+        if (sourceId == null || targetId == null) {
+            return new GraphPathSearchResponse(batchId, source, target, List.of(), List.of(), "source or target node not found");
+        }
+
+        Map<String, List<GraphVisualizationEdge>> adjacency = new LinkedHashMap<>();
+        for (GraphVisualizationEdge edge : graph.edges()) {
+            adjacency.computeIfAbsent(edge.from(), ignored -> new ArrayList<>()).add(edge);
+            adjacency.computeIfAbsent(edge.to(), ignored -> new ArrayList<>())
+                    .add(new GraphVisualizationEdge(edge.to(), edge.from(), edge.type(), edge.weight()));
+        }
+
+        Map<String, String> previousNode = new HashMap<>();
+        Map<String, GraphVisualizationEdge> previousEdge = new HashMap<>();
+        List<String> queue = new ArrayList<>();
+        Set<String> visited = new LinkedHashSet<>();
+        queue.add(sourceId);
+        visited.add(sourceId);
+
+        for (int idx = 0; idx < queue.size(); idx++) {
+            String current = queue.get(idx);
+            if (current.equals(targetId)) {
+                break;
+            }
+            for (GraphVisualizationEdge edge : adjacency.getOrDefault(current, List.of())) {
+                String next = edge.to();
+                if (visited.add(next)) {
+                    previousNode.put(next, current);
+                    previousEdge.put(next, edge);
+                    queue.add(next);
+                }
+            }
+        }
+
+        if (!visited.contains(targetId)) {
+            return new GraphPathSearchResponse(batchId, source, target, List.of(), List.of(), "no path found");
+        }
+
+        List<String> pathIds = new ArrayList<>();
+        List<GraphVisualizationEdge> pathEdges = new ArrayList<>();
+        String cursor = targetId;
+        pathIds.add(cursor);
+        while (!cursor.equals(sourceId)) {
+            GraphVisualizationEdge edge = previousEdge.get(cursor);
+            if (edge == null) {
+                break;
+            }
+            pathEdges.add(edge);
+            cursor = previousNode.get(cursor);
+            pathIds.add(cursor);
+        }
+        java.util.Collections.reverse(pathIds);
+        java.util.Collections.reverse(pathEdges);
+
+        List<GraphVisualizationNode> pathNodes = pathIds.stream()
+                .map(nodeMap::get)
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        String summary = String.format("Found path with %d nodes and %d relations", pathNodes.size(), pathEdges.size());
+        return new GraphPathSearchResponse(batchId, source, target, pathNodes, pathEdges, summary);
+    }
+
+    private boolean isRuleRelation(String relationType) {
+        return Set.of(
+                "PRODUCES_DEFECT_RISK",
+                "ASSOCIATED_WITH_DEFECT",
+                "INDICATES_DEFECT",
+                "FOUND_DEFECT",
+                "HAS_PARAM_VALUE",
+                "OF_PARAMETER").contains(relationType);
+    }
+
+    private Optional<GraphAssociationRelation> toRuleAssociation(
+            GraphVisualizationEdge edge,
+            Map<String, GraphVisualizationNode> nodeMap) {
+        GraphVisualizationNode source = nodeMap.get(edge.from());
+        GraphVisualizationNode target = nodeMap.get(edge.to());
+        if (source == null || target == null) {
+            return Optional.empty();
+        }
+        String reason = switch (edge.type()) {
+            case "PRODUCES_DEFECT_RISK" -> "Rule: process step is mapped to a defect risk observed in this batch.";
+            case "ASSOCIATED_WITH_DEFECT" -> "Rule: process parameter belongs to the same process step as the defect.";
+            case "INDICATES_DEFECT" -> "Rule: quality signal indicates the observed defect.";
+            case "FOUND_DEFECT" -> "Rule: inspection task found a concrete defect record in this batch.";
+            case "HAS_PARAM_VALUE" -> "Rule: process run contains this measured parameter value.";
+            case "OF_PARAMETER" -> "Rule: parameter value belongs to the corresponding parameter definition.";
+            default -> "Rule-derived graph relation.";
+        };
+        return Optional.of(new GraphAssociationRelation(
+                source.name(), target.name(), edge.type(), source.label(), target.label(),
+                1.0, Math.max(0.0, Math.min(1.0, edge.weight())), 1.0, reason));
+    }
+
+    private GraphFilterOptions buildGraphFilterOptions(GraphVisualizationResponse graph) {
+        List<String> defects = namesByLabels(graph, Set.of("Defect", "DefectType", "DefectRecord"));
+        List<String> processSteps = namesByLabels(graph, Set.of("ProcessStep"));
+        List<String> parameters = namesByLabels(graph, Set.of("ProcessParameter", "ParameterDef", "ParameterValue", "QualityParameter", "QualityMeasurement"));
+        List<String> relationTypes = graph.edges().stream()
+                .map(GraphVisualizationEdge::type)
+                .distinct()
+                .sorted()
+                .toList();
+        return new GraphFilterOptions(defects, processSteps, parameters, relationTypes);
+    }
+
+    private List<String> namesByLabels(GraphVisualizationResponse graph, Set<String> labels) {
+        return graph.nodes().stream()
+                .filter(node -> labels.contains(node.label()))
+                .map(GraphVisualizationNode::name)
+                .filter(name -> name != null && !name.isBlank())
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    private String findNodeIdByName(List<GraphVisualizationNode> nodes, String name) {
+        String normalized = normalizeGraphName(name);
+        return nodes.stream()
+                .filter(node -> normalizeGraphName(node.name()).equals(normalized)
+                        || normalizeGraphName(node.graphId()).equals(normalized))
+                .map(GraphVisualizationNode::graphId)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String normalizeGraphName(String value) {
+        return value == null ? "" : value.trim().toLowerCase();
+    }
+
     // ═══════════════════════════════════════════════════════
     // Neo4j Enrichment
     // ═══════════════════════════════════════════════════════
+
+    private List<GraphAssociationRelation> mineAprioriRelations(String batchId) {
+        List<Map<String, Object>> parameterRows = jdbcTemplate.queryForList("""
+                SELECT r.run_id::text AS run_id, pd.param_name
+                FROM prod.production_batch b
+                JOIN prod.process_run r ON r.batch_id = b.batch_id
+                JOIN prod.parameter_value pv ON pv.run_id = r.run_id
+                JOIN core.parameter_def pd ON pd.param_id = pv.param_id
+                WHERE b.batch_no = ? OR b.batch_id::text = ?
+                """, batchId, batchId);
+        List<Map<String, Object>> defectRows = jdbcTemplate.queryForList("""
+                SELECT r.run_id::text AS run_id, dt.defect_name
+                FROM prod.production_batch b
+                JOIN prod.process_run r ON r.batch_id = b.batch_id
+                JOIN qc.inspection_task i ON i.run_id = r.run_id
+                JOIN qc.defect_record dr ON dr.inspection_id = i.inspection_id
+                JOIN qc.defect_type dt ON dt.defect_type_id = dr.defect_type_id
+                WHERE b.batch_no = ? OR b.batch_id::text = ?
+                """, batchId, batchId);
+
+        Map<String, Set<String>> transactions = new LinkedHashMap<>();
+        for (Map<String, Object> row : parameterRows) {
+            String runId = String.valueOf(row.get("run_id"));
+            String name = String.valueOf(row.get("param_name"));
+            transactions.computeIfAbsent(runId, ignored -> new LinkedHashSet<>()).add("P:" + name);
+        }
+        for (Map<String, Object> row : defectRows) {
+            String runId = String.valueOf(row.get("run_id"));
+            String name = String.valueOf(row.get("defect_name"));
+            transactions.computeIfAbsent(runId, ignored -> new LinkedHashSet<>()).add("D:" + name);
+        }
+
+        List<Set<String>> baskets = transactions.values().stream()
+                .filter(items -> items.size() >= 2)
+                .toList();
+        int total = baskets.size();
+        if (total == 0) {
+            return List.of();
+        }
+
+        Map<String, Integer> itemCounts = new HashMap<>();
+        Map<String, Integer> pairCounts = new HashMap<>();
+        for (Set<String> basket : baskets) {
+            List<String> items = basket.stream().sorted().toList();
+            for (String item : items) {
+                itemCounts.merge(item, 1, Integer::sum);
+            }
+            for (int i = 0; i < items.size(); i++) {
+                for (int j = i + 1; j < items.size(); j++) {
+                    pairCounts.merge(items.get(i) + "||" + items.get(j), 1, Integer::sum);
+                }
+            }
+        }
+
+        double minSupport = total <= 5 ? 1.0 / total : 0.15;
+        List<GraphAssociationRelation> relations = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : pairCounts.entrySet()) {
+            String[] parts = entry.getKey().split("\\|\\|", 2);
+            if (parts.length != 2) {
+                continue;
+            }
+            double support = entry.getValue() / (double) total;
+            if (support < minSupport) {
+                continue;
+            }
+            String left = parts[0];
+            String right = parts[1];
+            String relationType = aprioriRelationType(left, right);
+            if (relationType == null) {
+                continue;
+            }
+
+            double confidence = entry.getValue() / (double) Math.max(1, itemCounts.getOrDefault(left, 1));
+            double rightSupport = itemCounts.getOrDefault(right, 1) / (double) total;
+            double lift = rightSupport == 0 ? 0 : confidence / rightSupport;
+            relations.add(new GraphAssociationRelation(
+                    stripAprioriPrefix(left),
+                    stripAprioriPrefix(right),
+                    relationType,
+                    aprioriNodeType(left),
+                    aprioriNodeType(right),
+                    roundMetric(support),
+                    roundMetric(confidence),
+                    roundMetric(lift),
+                    "Apriori: items co-occurred in " + entry.getValue() + " of " + total + " process-run transactions."));
+        }
+
+        return relations.stream()
+                .sorted(Comparator.comparingDouble(GraphAssociationRelation::lift).reversed()
+                        .thenComparing(Comparator.comparingDouble(GraphAssociationRelation::support).reversed()))
+                .limit(30)
+                .toList();
+    }
+
+    private String aprioriRelationType(String left, String right) {
+        boolean leftParameter = left.startsWith("P:");
+        boolean rightParameter = right.startsWith("P:");
+        boolean leftDefect = left.startsWith("D:");
+        boolean rightDefect = right.startsWith("D:");
+        if ((leftParameter && rightDefect) || (leftDefect && rightParameter)) {
+            return "APRIORI_ASSOCIATED_WITH_DEFECT";
+        }
+        if ((leftParameter && rightParameter) || (leftDefect && rightDefect)) {
+            return "CO_OCCURS_WITH";
+        }
+        return null;
+    }
+
+    private String aprioriNodeType(String item) {
+        return item.startsWith("D:") ? "DefectType" : "ParameterDef";
+    }
+
+    private String stripAprioriPrefix(String item) {
+        return item.length() > 2 ? item.substring(2) : item;
+    }
+
+    private double roundMetric(double value) {
+        return Math.round(value * 10000.0) / 10000.0;
+    }
 
     private GraphVisualizationResponse getGraphVisualizationFromNeo4j(String batchId) {
         if (batchId == null || batchId.isBlank() || neo4jDriver == null) {
