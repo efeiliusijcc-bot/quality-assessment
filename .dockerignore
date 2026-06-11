@@ -5,6 +5,7 @@
 frontend/node_modules
 frontend/dist
 target
+!target/demo3-0.0.1-SNAPSHOT.jar
 *.log
 *.tmp
 test_data

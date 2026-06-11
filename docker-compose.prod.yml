@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    image: quality-assessment-backend:latest
+    container_name: quality-assessment-backend
+    restart: unless-stopped
+    env_file:
+      - ./deploy/backend.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./logs:/app/logs
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: quality-assessment-frontend:latest
+    container_name: quality-assessment-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:18080:80"

@@ -1,0 +1,21 @@
+# Runtime-only backend image.
+# Build this after creating target/demo3-0.0.1-SNAPSHOT.jar locally:
+#   mvn clean package -DskipTests
+#   docker build -f Dockerfile.backend.runtime -t quality-assessment-backend:latest .
+
+FROM eclipse-temurin:17-jre
+
+WORKDIR /app
+
+RUN useradd --system --create-home --uid 10001 appuser
+
+COPY target/demo3-0.0.1-SNAPSHOT.jar /app/app.jar
+
+ENV SERVER_PORT=8080
+ENV JAVA_OPTS="-Xms256m -Xmx1024m"
+
+EXPOSE 8080
+
+USER appuser
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]

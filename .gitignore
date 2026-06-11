@@ -39,3 +39,6 @@ build/
 
 ### Codex temporary files ###
 .codex_doc_compare/
+
+### Local deployment secrets ###
+deploy/backend.env
