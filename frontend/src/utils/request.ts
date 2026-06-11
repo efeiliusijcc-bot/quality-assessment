@@ -19,6 +19,7 @@ export interface RequestConfig extends AxiosRequestConfig {
 interface InternalRequestConfig extends InternalAxiosRequestConfig {
   showError?: boolean;
   showLoading?: boolean;
+  loadingOpened?: boolean;
 }
 
 let loadingInstance: ReturnType<typeof ElLoading.service> | null = null;
@@ -90,11 +91,12 @@ service.interceptors.request.use(
   (config: InternalRequestConfig) => {
     const token = getAccessToken();
 
-    config.showLoading ??= true;
+    config.showLoading ??= false;
     config.showError ??= true;
 
     if (config.showLoading) {
       openLoading();
+      config.loadingOpened = true;
     }
 
     if (token) {
@@ -111,14 +113,20 @@ service.interceptors.request.use(
     return config;
   },
   (error) => {
-    closeLoading();
+    const config = error.config as InternalRequestConfig | undefined;
+    if (config?.loadingOpened) {
+      closeLoading();
+    }
     return Promise.reject(error);
   },
 );
 
 service.interceptors.response.use(
   (response) => {
-    closeLoading();
+    const config = response.config as InternalRequestConfig;
+    if (config.loadingOpened) {
+      closeLoading();
+    }
 
     // Blob 响应直接返回，不做 code 解包
     if (response.config.responseType === 'blob') {
@@ -157,9 +165,10 @@ service.interceptors.response.use(
     return Promise.reject({ code: payload.code, message });
   },
   (error: AxiosError<ApiResponse<never>>) => {
-    closeLoading();
-
     const config = error.config as InternalRequestConfig | undefined;
+    if (config?.loadingOpened) {
+      closeLoading();
+    }
     const status = error.response?.status;
     const message = getResponseMessage(error.response?.data) || error.message || '网络异常，请稍后重试';
 
