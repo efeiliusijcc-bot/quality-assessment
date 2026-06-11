@@ -31,19 +31,34 @@
             size="large"
           >
             <el-form-item label="账号" prop="username">
-              <el-input v-model="form.username" placeholder="请输入账号" />
+              <el-input
+                v-model.trim="form.username"
+                name="username"
+                autocomplete="username"
+                :validate-event="false"
+                placeholder="请输入账号"
+              />
             </el-form-item>
             <el-form-item label="密码" prop="password">
               <el-input
                 v-model="form.password"
+                name="password"
                 type="password"
                 show-password
+                autocomplete="current-password"
+                :validate-event="false"
                 placeholder="请输入密码"
               />
             </el-form-item>
             <el-form-item label="验证码" prop="captcha">
               <div class="grid grid-cols-[1fr_132px] gap-3">
-                <el-input v-model="form.captcha" placeholder="请输入验证码" />
+                <el-input
+                  v-model.trim="form.captcha"
+                  name="captcha"
+                  autocomplete="off"
+                  :validate-event="false"
+                  placeholder="请输入验证码"
+                />
                 <img
                   v-if="captchaImage"
                   :src="captchaImage"
