@@ -103,6 +103,16 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'quality-cube',
+        name: 'quality-cube',
+        component: () => import('@/views/quality-cube/QualityCubeView.vue'),
+        meta: {
+          title: '质量缺陷数据立方体',
+          icon: 'DataAnalysis',
+          roles: ['admin', 'engineer'],
+        },
+      },
+      {
         path: 'knowledge-graph',
         name: 'knowledge-graph',
         component: () => import('@/views/graph/KnowledgeGraphView.vue'),

@@ -31,6 +31,11 @@ export const menus: MenuItem[] = [
     ],
   },
   {
+    path: '/quality-cube',
+    title: '质量缺陷数据立方体',
+    icon: 'Grid',
+  },
+  {
     path: '/knowledge-graph',
     title: '知识图谱可视化',
     icon: 'Connection',
