@@ -14,9 +14,8 @@ import com.example.demo.eval.repository.AssessmentResultRepository;
 import com.example.demo.eval.repository.AssessmentTaskRepository;
 import com.example.demo.eval.repository.OptimizationResultRepository;
 import com.example.demo.eval.repository.OptimizationTaskRepository;
-import com.example.demo.optimization.algorithm.Mansga3Optimizer;
-import com.example.demo.optimization.domain.OptimizationSolution;
 import com.example.demo.optimization.domain.ProcessParameterSpace;
+import com.example.demo.optimization.service.ManyObjectiveOptimizationRunner;
 import com.example.demo.prod.domain.ParameterValue;
 import com.example.demo.prod.domain.ProductionBatch;
 import com.example.demo.prod.domain.ProcessRun;
@@ -54,6 +53,7 @@ public class EvalService {
     private final InspectionTaskRepository inspectionTaskRepo;
     private final DefectRecordRepository defectRecordRepo;
     private final GraphReasoningService graphReasoningService;
+    private final ManyObjectiveOptimizationRunner manyObjectiveOptimizationRunner;
 
     public EvalService(AssessmentTaskRepository assessmentTaskRepo,
                        AssessmentResultRepository assessmentResultRepo,
@@ -67,7 +67,8 @@ public class EvalService {
                        QualityMeasurementRepository qualityMeasurementRepo,
                        InspectionTaskRepository inspectionTaskRepo,
                        DefectRecordRepository defectRecordRepo,
-                       GraphReasoningService graphReasoningService) {
+                       GraphReasoningService graphReasoningService,
+                       ManyObjectiveOptimizationRunner manyObjectiveOptimizationRunner) {
         this.assessmentTaskRepo = assessmentTaskRepo;
         this.assessmentResultRepo = assessmentResultRepo;
         this.optimizationTaskRepo = optimizationTaskRepo;
@@ -81,6 +82,7 @@ public class EvalService {
         this.inspectionTaskRepo = inspectionTaskRepo;
         this.defectRecordRepo = defectRecordRepo;
         this.graphReasoningService = graphReasoningService;
+        this.manyObjectiveOptimizationRunner = manyObjectiveOptimizationRunner;
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -357,89 +359,16 @@ public class EvalService {
     // ════════════════════════════════════════════════════════════════
 
     public OptimizationResponse runOptimization(String batchId) {
-        UUID batchUuid;
-        try {
-            batchUuid = UUID.fromString(batchId);
-        } catch (IllegalArgumentException e) {
-            throw new BusinessException(400, "invalid batchId format");
-        }
-
-        long startTime = System.currentTimeMillis();
-        int populationSize = 50;
-        int generations = 100;
-        int objectiveCount = 2;
-
-        // Use Mansga3Optimizer as default
-        Mansga3Optimizer optimizer = new Mansga3Optimizer(populationSize, generations, objectiveCount, System.nanoTime());
-
-        // Simple evaluator: minimize deviation from target values
-        Map<String, Double> targets = ProcessParameterSpace.targetValues();
-        java.util.function.Function<OptimizationSolution, Map<String, Double>> evaluator = solution -> {
-            Map<String, Double> objectives = new LinkedHashMap<>();
-            double totalDeviation = 0.0;
-            double maxDeviation = 0.0;
-            for (Map.Entry<String, Double> entry : solution.getParameters().entrySet()) {
-                double target = targets.getOrDefault(entry.getKey(), entry.getValue());
-                double dev = Math.abs(entry.getValue() - target);
-                totalDeviation += dev;
-                maxDeviation = Math.max(maxDeviation, dev);
-            }
-            objectives.put("total_deviation", totalDeviation);
-            objectives.put("max_deviation", maxDeviation);
-            return objectives;
-        };
-
-        List<OptimizationSolution> paretoFront = optimizer.optimize(evaluator);
-        long elapsed = System.currentTimeMillis() - startTime;
-
-        // Convert to DTOs
-        List<ParetoSolutionDto> paretoDtos = paretoFront.stream()
-            .map(sol -> new ParetoSolutionDto(
-                sol.getParameters(),
-                sol.getObjectives(),
-                sol.getCrowdingDistance()
-            ))
-            .toList();
-
-        // Pick recommended solution (first in Pareto front)
-        ParetoSolutionDto recommended = paretoDtos.isEmpty() ? null : paretoDtos.get(0);
-
-        OptimizationStatisticsDto stats = new OptimizationStatisticsDto(
-            elapsed,
-            populationSize * generations,
-            paretoFront.size()
-        );
-
-        // Persist results
-        OptimizationTask optTask = createOptTask(batchUuid, "MANSga3");
-        optTask.setOptStatus("COMPLETED");
-        optTask.setFinishedAt(Instant.now());
-        optimizationTaskRepo.save(optTask);
-
-        for (int i = 0; i < paretoFront.size(); i++) {
-            OptimizationSolution sol = paretoFront.get(i);
-            OptimizationResult result = new OptimizationResult(optTask.getOptTaskId(), i);
-            try {
-                // Store parameter solution and objective values as JSON strings
-                // These will be persisted via the JSONB columns
-                result.setParameterSolution(MAPPER.writeValueAsString(sol.getParameters()));
-                result.setObjectiveValues(MAPPER.writeValueAsString(sol.getObjectives()));
-                result.setFeasibleFlag(true);
-                result.setRecommendationLevel(i == 0 ? "RECOMMENDED" : "ALTERNATIVE");
-                optimizationResultRepo.save(result);
-            } catch (Exception e) {
-                org.slf4j.LoggerFactory.getLogger(EvalService.class).warn("Failed to persist optimization result {}: {}", i, e.getMessage());
-            }
-        }
-
-        return new OptimizationResponse(
-            batchId,
-            "MANSga3",
-            generations,
-            paretoDtos,
-            recommended,
-            stats
-        );
+        UUID batchUuid = resolveBatch(batchId)
+            .map(ProductionBatch::getBatchId)
+            .orElseGet(() -> {
+                try {
+                    return UUID.fromString(batchId);
+                } catch (IllegalArgumentException e) {
+                    throw new BusinessException(400, "invalid batchId format");
+                }
+            });
+        return manyObjectiveOptimizationRunner.run(batchUuid, "MANSGA_III", 96, 120);
     }
 
     public OptimizationResponse getOptimizationResult(String batchId) {

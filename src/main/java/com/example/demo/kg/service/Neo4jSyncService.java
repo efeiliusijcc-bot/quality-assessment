@@ -21,10 +21,12 @@ import com.example.demo.prod.repository.ProductionBatchRepository;
 import com.example.demo.qc.domain.DefectRecord;
 import com.example.demo.qc.domain.DefectType;
 import com.example.demo.qc.domain.InspectionTask;
+import com.example.demo.qc.domain.QualityMetricDef;
 import com.example.demo.qc.domain.QualityMeasurement;
 import com.example.demo.qc.repository.DefectRecordRepository;
 import com.example.demo.qc.repository.DefectTypeRepository;
 import com.example.demo.qc.repository.InspectionTaskRepository;
+import com.example.demo.qc.repository.QualityMetricDefRepository;
 import com.example.demo.qc.repository.QualityMeasurementRepository;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Result;
@@ -66,6 +68,7 @@ public class Neo4jSyncService {
     private final DefectTypeRepository defectTypeRepo;
     private final InspectionTaskRepository inspectionTaskRepo;
     private final DefectRecordRepository defectRecordRepo;
+    private final QualityMetricDefRepository qualityMetricDefRepo;
     private final QualityMeasurementRepository qualityMeasurementRepo;
 
     // Neo4j driver
@@ -85,6 +88,7 @@ public class Neo4jSyncService {
             DefectTypeRepository defectTypeRepo,
             InspectionTaskRepository inspectionTaskRepo,
             DefectRecordRepository defectRecordRepo,
+            QualityMetricDefRepository qualityMetricDefRepo,
             QualityMeasurementRepository qualityMeasurementRepo,
             Driver neo4jDriver,
             JdbcTemplate jdbcTemplate) {
@@ -100,6 +104,7 @@ public class Neo4jSyncService {
         this.defectTypeRepo = defectTypeRepo;
         this.inspectionTaskRepo = inspectionTaskRepo;
         this.defectRecordRepo = defectRecordRepo;
+        this.qualityMetricDefRepo = qualityMetricDefRepo;
         this.qualityMeasurementRepo = qualityMeasurementRepo;
         this.neo4jDriver = neo4jDriver;
         this.jdbcTemplate = jdbcTemplate;
@@ -339,6 +344,7 @@ public class Neo4jSyncService {
         counts.put("DefectType", syncDefectTypes(session));
         counts.put("InspectionTask", syncInspectionTasks(session));
         counts.put("DefectRecord", syncDefectRecords(session));
+        counts.put("QualityMetricDef", syncQualityMetricDefs(session));
         counts.put("QualityMeasurement", syncQualityMeasurements(session));
 
         return counts;
@@ -649,6 +655,35 @@ public class Neo4jSyncService {
         return count;
     }
 
+    private int syncQualityMetricDefs(Session session) {
+        List<QualityMetricDef> items = qualityMetricDefRepo.findAll();
+        int count = 0;
+        for (List<QualityMetricDef> batch : partition(items, BATCH_SIZE)) {
+            List<Map<String, Object>> rows = batch.stream()
+                    .map(qm -> row(
+                            "metricId", qm.getMetricId().toString(),
+                            "stepId", qm.getStepId() != null ? qm.getStepId().toString() : null,
+                            "metricCode", qm.getMetricCode(),
+                            "metricName", qm.getMetricName(),
+                            "unit", qm.getUnit(),
+                            "lowerLimit", qm.getLowerLimit() != null ? qm.getLowerLimit().doubleValue() : null,
+                            "upperLimit", qm.getUpperLimit() != null ? qm.getUpperLimit().doubleValue() : null,
+                            "targetValue", qm.getTargetValue() != null ? qm.getTargetValue().doubleValue() : null,
+                            "severityWeight", qm.getSeverityWeight() != null ? qm.getSeverityWeight().doubleValue() : null))
+                    .toList();
+            runBatch(session,
+                    "UNWIND $rows AS row " +
+                            "MERGE (n:QualityMetricDef {metricId: row.metricId}) " +
+                            "SET n.stepId = row.stepId, n.metricCode = row.metricCode, " +
+                            "n.metricName = row.metricName, n.unit = row.unit, " +
+                            "n.lowerLimit = row.lowerLimit, n.upperLimit = row.upperLimit, " +
+                            "n.targetValue = row.targetValue, n.severityWeight = row.severityWeight",
+                    rows);
+            count += batch.size();
+        }
+        return count;
+    }
+
     private int syncQualityMeasurements(Session session) {
         List<QualityMeasurement> items = qualityMeasurementRepo.findAll();
         int count = 0;
@@ -685,42 +720,42 @@ public class Neo4jSyncService {
         Map<String, Integer> counts = new LinkedHashMap<>();
 
         // 1. ProcessStep -[:HAS_WORKSTATION]-> Workstation
-        counts.put("HAS_WORKSTATION", createRelationshipsViaProperty(
+        counts.put("HAS_WORKSTATION", createOwnerRelationshipsViaProperty(
                 session, "Workstation", "stationId", "stepId",
                 "ProcessStep", "stepId", "HAS_WORKSTATION"));
 
         // 2. Workstation -[:HAS_EQUIPMENT]-> Equipment
-        counts.put("HAS_EQUIPMENT", createRelationshipsViaProperty(
+        counts.put("HAS_EQUIPMENT", createOwnerRelationshipsViaProperty(
                 session, "Equipment", "equipmentId", "stationId",
                 "Workstation", "stationId", "HAS_EQUIPMENT"));
 
         // 3. ProcessStep -[:HAS_PARAMETER]-> ParameterDef
-        counts.put("HAS_PARAMETER", createRelationshipsViaProperty(
+        counts.put("HAS_PARAMETER", createOwnerRelationshipsViaProperty(
                 session, "ParameterDef", "paramId", "stepId",
                 "ProcessStep", "stepId", "HAS_PARAMETER"));
 
         // 4. ProductionBatch -[:HAS_UNIT]-> ProductUnit
-        counts.put("HAS_UNIT", createRelationshipsViaProperty(
+        counts.put("HAS_UNIT", createOwnerRelationshipsViaProperty(
                 session, "ProductUnit", "unitId", "batchId",
                 "ProductionBatch", "batchId", "HAS_UNIT"));
 
         // 5. ProductUnit -[:HAS_RUN]-> ProcessRun
-        counts.put("HAS_RUN", createRelationshipsViaProperty(
+        counts.put("HAS_RUN", createOwnerRelationshipsViaProperty(
                 session, "ProcessRun", "runId", "unitId",
                 "ProductUnit", "unitId", "HAS_RUN"));
 
         // 6. ProcessRun -[:HAS_PARAM_VALUE]-> ParameterValue
-        counts.put("HAS_PARAM_VALUE", createRelationshipsViaProperty(
+        counts.put("HAS_PARAM_VALUE", createOwnerRelationshipsViaProperty(
                 session, "ParameterValue", "valueId", "runId",
                 "ProcessRun", "runId", "HAS_PARAM_VALUE"));
 
         // 7. ProcessRun -[:HAS_INSPECTION]-> InspectionTask
-        counts.put("HAS_INSPECTION", createRelationshipsViaProperty(
+        counts.put("HAS_INSPECTION", createOwnerRelationshipsViaProperty(
                 session, "InspectionTask", "inspectionId", "runId",
                 "ProcessRun", "runId", "HAS_INSPECTION"));
 
         // 8. InspectionTask -[:FOUND_DEFECT]-> DefectRecord
-        counts.put("FOUND_DEFECT", createRelationshipsViaProperty(
+        counts.put("FOUND_DEFECT", createOwnerRelationshipsViaProperty(
                 session, "DefectRecord", "defectId", "inspectionId",
                 "InspectionTask", "inspectionId", "FOUND_DEFECT"));
 
@@ -739,6 +774,16 @@ public class Neo4jSyncService {
                 session, "ParameterValue", "valueId", "paramId",
                 "ParameterDef", "paramId", "OF_PARAMETER"));
 
+        // 12. ProcessStep -[:HAS_DEFECT]-> DefectType
+        counts.put("HAS_DEFECT", createOwnerRelationshipsViaProperty(
+                session, "DefectType", "defectTypeId", "stepId",
+                "ProcessStep", "stepId", "HAS_DEFECT"));
+
+        // 13. ProcessStep -[:HAS_QUALITY_METRIC]-> QualityMetricDef
+        counts.put("HAS_QUALITY_METRIC", createOwnerRelationshipsViaProperty(
+                session, "QualityMetricDef", "metricId", "stepId",
+                "ProcessStep", "stepId", "HAS_QUALITY_METRIC"));
+
         return counts;
     }
 
@@ -748,6 +793,48 @@ public class Neo4jSyncService {
      *
      * For sourceLabel/sourceKey/fkProperty -> targetLabel/targetKey via relType
      */
+    private int createOwnerRelationshipsViaProperty(
+            Session session,
+            String sourceLabel, String sourceKey, String fkProperty,
+            String targetLabel, String targetKey, String relType) {
+
+        try {
+            session.run(String.format(
+                    "CREATE INDEX IF NOT EXISTS FOR (n:%s) ON (n.%s)", targetLabel, targetKey));
+        } catch (Exception ignored) {
+            // Index may already exist
+        }
+
+        int count = 0;
+        String query = String.format("MATCH (n:%s) RETURN n.%s AS srcKey, n.%s AS fkVal",
+                sourceLabel, sourceKey, fkProperty);
+
+        Result result = session.run(query);
+        List<org.neo4j.driver.Record> records = result.list();
+        String relCypher = String.format(
+                "UNWIND $rows AS row " +
+                        "MATCH (child:%s {%s: row.srcKey}) " +
+                        "MATCH (owner:%s {%s: row.tgtKey}) " +
+                        "MERGE (owner)-[:%s]->(child)",
+                sourceLabel, sourceKey,
+                targetLabel, targetKey,
+                relType);
+
+        for (List<org.neo4j.driver.Record> batch : partition(records, BATCH_SIZE)) {
+            List<Map<String, Object>> rows = new ArrayList<>();
+            for (org.neo4j.driver.Record rec : batch) {
+                Value fkVal = rec.get("fkVal");
+                if (fkVal.isNull()) continue;
+                rows.add(row("srcKey", rec.get("srcKey").asString(), "tgtKey", fkVal.asString()));
+            }
+            if (!rows.isEmpty()) {
+                runBatch(session, relCypher, rows);
+                count += rows.size();
+            }
+        }
+        return count;
+    }
+
     private int createRelationshipsViaProperty(
             Session session,
             String sourceLabel, String sourceKey, String fkProperty,

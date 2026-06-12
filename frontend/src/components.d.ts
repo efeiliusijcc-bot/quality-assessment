@@ -11,8 +11,10 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AlgorithmSelector: typeof import('./components/common/AlgorithmSelector.vue')['default']
     AppHeader: typeof import('./components/layout/AppHeader.vue')['default']
     AppSidebar: typeof import('./components/layout/AppSidebar.vue')['default']
+    AprioriRulesPanel: typeof import('./components/common/AprioriRulesPanel.vue')['default']
     BaseChart: typeof import('./components/charts/BaseChart.vue')['default']
     DefectViewer: typeof import('./components/defect/DefectViewer.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
@@ -43,10 +45,15 @@ declare module 'vue' {
     ElTabs: typeof import('element-plus/es')['ElTabs']
     ElTag: typeof import('element-plus/es')['ElTag']
     ElUpload: typeof import('element-plus/es')['ElUpload']
+    EmptyState: typeof import('./components/common/EmptyState.vue')['default']
     GraphVisualization: typeof import('./components/charts/GraphVisualization.vue')['default']
+    MetricTile: typeof import('./components/common/MetricTile.vue')['default']
+    ObjectiveMatrix: typeof import('./components/common/ObjectiveMatrix.vue')['default']
     PageIntroCard: typeof import('./components/dashboard/PageIntroCard.vue')['default']
+    ParetoSolutionTable: typeof import('./components/common/ParetoSolutionTable.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    SectionCard: typeof import('./components/common/SectionCard.vue')['default']
   }
   export interface GlobalDirectives {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

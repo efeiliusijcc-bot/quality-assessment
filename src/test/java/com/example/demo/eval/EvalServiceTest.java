@@ -198,9 +198,10 @@ class EvalServiceTest {
 
         assertNotNull(response);
         assertEquals(batchId.toString(), response.batchId());
-        assertEquals("MANSga3", response.algorithm());
+        assertEquals("MANSGA_III", response.algorithm());
         assertNotNull(response.paretoFront());
         assertNotNull(response.recommendedSolution());
+        assertEquals(7, response.recommendedSolution().objectiveValues().size());
         assertNotNull(response.statistics());
         assertTrue(response.statistics().totalEvaluations() > 0);
     }

@@ -1,170 +1,106 @@
 <template>
-  <div class="space-y-6">
+  <div class="space-y-5">
     <PageIntroCard
       title="工艺参数研判评估"
-      description="针对异常批次进行参数对比、诊断分析和知识图谱关联研判。"
+      description="融合实时工艺参数、质量缺陷链路、Apriori 规则和知识图谱关系，对异常工位进行原因研判。"
       badge="JUDGMENT"
       :metrics="dashboard.metrics"
     />
 
-    <section class="content-card p-6">
-      <div class="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <div class="text-sm text-slate-500">当前评估上下文</div>
-          <div class="mt-2 text-lg font-semibold text-slate-900">{{ currentContextLabel }}</div>
-        </div>
-        <div class="flex items-center gap-3">
-          <span class="text-sm text-slate-500">异常样本</span>
-          <el-tag type="danger" round>{{ activeSampleId || 'SAMPLE-07' }}</el-tag>
+    <section class="grid gap-5 xl:grid-cols-[1.08fr_0.92fr]">
+      <SectionCard title="工艺参数实时流" description="展示关键工艺参数的时间曲线，用于定位异常波动区间。" compact>
+        <template #extra>
           <el-button type="primary" plain @click="switchSample">切换样本</el-button>
+        </template>
+        <div class="h-[330px] rounded-[24px] border border-slate-200 bg-slate-950 p-4">
+          <BaseChart :option="streamChartOption" />
         </div>
-      </div>
+      </SectionCard>
+
+      <SectionCard title="研判结论" description="汇总异常产品、主要缺陷与工艺参数异常链路。" compact>
+        <template #extra>
+          <el-tag :type="dashboard.graphReasoning.riskScore > 60 ? 'danger' : 'success'" effect="dark" round>
+            风险评分 {{ dashboard.graphReasoning.riskScore.toFixed(1) }}
+          </el-tag>
+        </template>
+        <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+          <div class="text-sm text-slate-500">核心结论</div>
+          <div class="mt-2 text-xl font-bold text-slate-900">{{ dashboard.coreConclusion || '暂无研判结论' }}</div>
+          <div class="mt-2 text-sm leading-6 text-slate-600">{{ dashboard.coreDescription }}</div>
+        </div>
+        <div class="mt-4 grid gap-3 md:grid-cols-2">
+          <MetricTile label="主要缺陷" :value="dashboard.graphReasoning.mainDefect || '暂无'" extra="缺陷类型" />
+          <MetricTile label="缺陷链路" :value="defectChainLabel" extra="参数-缺陷关联" />
+          <MetricTile label="参数异常链" :value="parameterChainLabel" extra="GAT / Apriori 证据" />
+          <MetricTile label="工序诊断链" :value="stepChainLabel" extra="上下游影响" />
+        </div>
+      </SectionCard>
     </section>
 
-    <section class="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-      <div class="space-y-6">
-        <section class="content-card p-8">
-          <div>
-            <h2 class="panel-title">工艺参数数据流</h2>
-            <p class="panel-subtitle">设备运行参数的时间序列趋势。</p>
-          </div>
-          <div class="mt-6 h-[360px] rounded-[28px] border border-slate-200 bg-slate-950 p-5">
-            <BaseChart :option="streamChartOption" />
-          </div>
-        </section>
+    <section class="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+      <SectionCard title="参数偏差雷达" description="对比异常样本与目标工艺的多指标偏差。" compact>
+        <div class="h-[320px] rounded-[24px] border border-slate-200 bg-slate-950 p-4">
+          <BaseChart :option="radarOption" />
+        </div>
+      </SectionCard>
 
-        <section class="content-card p-8">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <h2 class="panel-title">工艺参数雷达评估</h2>
-              <p class="panel-subtitle">异常样本与目标工艺窗口对比。</p>
-            </div>
-            <el-tag type="danger" effect="dark" round>异常样本</el-tag>
-          </div>
-          <div class="mt-6 h-[360px] rounded-[28px] border border-slate-200 bg-slate-950 p-5">
-            <BaseChart :option="radarOption" />
-          </div>
-        </section>
+      <SectionCard title="参数优化对比" description="展示当前参数与目标参数的对比结果。" compact>
+        <div class="h-[320px] rounded-[24px] border border-slate-200 bg-slate-950 p-4">
+          <BaseChart :option="barOption" />
+        </div>
+      </SectionCard>
+    </section>
 
-        <section class="content-card p-8">
-          <div>
-            <h2 class="panel-title">关键参数偏差对比</h2>
-            <p class="panel-subtitle">当前工艺值和目标工艺值的并列比较。</p>
+    <section class="grid gap-5 xl:grid-cols-[0.86fr_1.14fr]">
+      <SectionCard title="Apriori 关联规则" description="展示参数、缺陷、工序之间的频繁共现关系，用于解释潜在质量问题。" compact>
+        <template #extra>
+          <div class="flex gap-2">
+            <el-button plain :loading="aprioriLoading" @click="handleMineApriori">挖掘规则</el-button>
+            <el-button type="primary" plain :loading="aprioriSaving" @click="handleSaveApriori">挖掘并入库</el-button>
           </div>
-          <div class="mt-6 h-[320px] rounded-[28px] border border-slate-200 bg-slate-950 p-5">
-            <BaseChart :option="barOption" />
-          </div>
-        </section>
-      </div>
+        </template>
+        <AprioriRulesPanel :rules="aprioriRules" :limit="6" />
+      </SectionCard>
 
-      <div class="space-y-6">
-        <section class="content-card p-8">
-          <h2 class="panel-title">研判结果报告</h2>
-          <p class="panel-subtitle">结合参数偏差与图谱推理输出诊断意见。</p>
-
-          <div class="mt-6 rounded-3xl border border-amber-200 bg-amber-50 p-5">
-            <div class="text-sm text-amber-700">核心结论</div>
-            <div class="mt-3 text-lg font-semibold text-amber-900">{{ dashboard.coreConclusion }}</div>
-            <div class="mt-2 text-sm leading-7 text-amber-800">{{ dashboard.coreDescription }}</div>
-          </div>
-
-          <div class="mt-6 space-y-4">
-            <div
-              v-for="item in dashboard.diagnosisItems"
-              :key="item.title"
-              class="rounded-3xl border border-slate-200 bg-slate-50 p-5"
-            >
-              <div class="text-base font-semibold text-slate-900">{{ item.title }}</div>
-              <div class="mt-3 text-sm leading-7 text-slate-600">{{ item.content }}</div>
+      <SectionCard title="异常诊断与处置建议" description="根据规则挖掘、图谱推理和工艺参数偏差生成处置建议。" compact>
+        <div class="grid gap-4 lg:grid-cols-2">
+          <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <div class="mb-3 text-sm font-semibold text-slate-500">诊断项</div>
+            <div class="space-y-3">
+              <div v-for="item in dashboard.diagnosisItems" :key="item.title" class="rounded-xl bg-white px-3 py-3 text-sm leading-6 text-slate-700">
+                <div class="font-semibold text-slate-900">{{ item.title }}</div>
+                <div class="mt-1">{{ item.content }}</div>
+              </div>
+              <EmptyState v-if="dashboard.diagnosisItems.length === 0" title="暂无诊断项" />
             </div>
           </div>
-
-          <div class="mt-6 rounded-3xl border border-slate-200 bg-slate-950 p-5 text-slate-100">
-            <div class="text-sm tracking-[0.18em] text-cyan-300/75">DIAGNOSIS ACTION</div>
-            <div class="mt-4 grid gap-4">
-              <div
-                v-for="item in dashboard.actionItems"
-                :key="item.label"
-                class="rounded-2xl border border-white/10 bg-white/5 p-4"
-              >
-                <div class="text-sm text-slate-400">{{ item.label }}</div>
-                <div class="mt-2 font-semibold text-white">{{ item.value }}</div>
+          <div class="rounded-2xl border border-slate-200 bg-slate-950 p-4 text-slate-100">
+            <div class="mb-3 text-sm tracking-[0.18em] text-cyan-300/75">ACTION ITEMS</div>
+            <div class="space-y-3">
+              <div v-for="item in dashboard.actionItems" :key="item.label" class="rounded-xl border border-white/10 bg-white/5 px-3 py-3">
+                <div class="text-xs text-slate-400">{{ item.label }}</div>
+                <div class="mt-1 font-semibold text-white">{{ item.value }}</div>
+              </div>
+              <div v-if="dashboard.actionItems.length === 0" class="rounded-xl border border-white/10 bg-white/5 p-4 text-sm text-slate-400">
+                暂无处置建议
               </div>
             </div>
           </div>
-        </section>
-
-        <section class="content-card p-8">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <h2 class="panel-title">图谱推理摘要</h2>
-              <p class="panel-subtitle">批次缺陷链路和规则关联结果。</p>
-            </div>
-            <el-tag :type="dashboard.graphReasoning?.riskScore > 60 ? 'danger' : 'success'" effect="dark" round>
-              风险评分 {{ (dashboard.graphReasoning?.riskScore ?? 0).toFixed(1) }}
-            </el-tag>
-          </div>
-
-          <div class="mt-5 grid gap-4 md:grid-cols-2">
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">主要缺陷</div>
-              <div class="mt-2 text-xl font-semibold text-slate-900">{{ dashboard.graphReasoning?.mainDefect || '暂无' }}</div>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">推理结论</div>
-              <div class="mt-2 text-sm font-medium text-slate-700">{{ dashboard.graphReasoning?.reasoningSummary || '暂无图谱推理结果' }}</div>
-            </div>
-          </div>
-
-          <div class="mt-4 grid gap-4 md:grid-cols-3">
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">图谱节点数</div>
-              <div class="mt-1 text-lg font-semibold text-slate-900">{{ dashboard.graphReasoning?.statistics?.nodeCount ?? 0 }}</div>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">关系总数</div>
-              <div class="mt-1 text-lg font-semibold text-slate-900">{{ dashboard.graphReasoning?.statistics?.relationCount ?? 0 }}</div>
-            </div>
-            <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <div class="text-sm text-slate-500">缺陷链路</div>
-              <div class="mt-1 text-sm text-slate-700">{{ defectChainLabel }}</div>
-            </div>
-          </div>
-
-          <div class="mt-4 grid gap-4 md:grid-cols-2">
-            <div class="rounded-2xl border border-cyan-200 bg-cyan-50 p-4">
-              <div class="text-sm text-cyan-700">参数异常链 parameterChain</div>
-              <div class="mt-2 text-sm font-semibold leading-7 text-cyan-950">{{ parameterChainLabel }}</div>
-            </div>
-            <div class="rounded-2xl border border-indigo-200 bg-indigo-50 p-4">
-              <div class="text-sm text-indigo-700">工序诊断链 stepChain</div>
-              <div class="mt-2 text-sm font-semibold leading-7 text-indigo-950">{{ stepChainLabel }}</div>
-            </div>
-          </div>
-        </section>
-      </div>
+        </div>
+      </SectionCard>
     </section>
 
-    <section class="content-card p-8">
-      <div class="flex items-center justify-between gap-4">
-        <div>
-          <h2 class="panel-title">知识图谱关联可视化</h2>
-          <p class="panel-subtitle">展示参数、缺陷和工序之间的关系网络。</p>
-        </div>
-      </div>
-      <div class="mt-6 h-[400px] rounded-[28px] border border-slate-200 bg-slate-950 p-5">
+    <SectionCard title="知识图谱研判视图" description="展示当前批次下工序、参数、缺陷、质量指标之间的关联网络。" compact>
+      <div class="h-[360px] rounded-[24px] border border-slate-200 bg-slate-950 p-4">
         <GraphVisualization :nodes="graphNodes" :edges="graphEdges" />
       </div>
-    </section>
+    </SectionCard>
 
-    <section class="content-card p-8">
-      <h2 class="panel-title">评估历史记录</h2>
-      <p class="panel-subtitle">展示研判评估的历史数据记录。</p>
-
-      <div class="mt-6 overflow-hidden rounded-[24px] border border-slate-200">
+    <SectionCard title="评估历史记录" description="展示研判评估历史数据。" compact>
+      <div class="overflow-hidden rounded-[24px] border border-slate-200">
         <el-table :data="historyRecords" border stripe v-loading="historyLoading" class="export-table">
           <el-table-column prop="sampledAt" label="采样时间" min-width="180" />
-          <el-table-column prop="batchId" label="批次号" min-width="160" />
+          <el-table-column prop="batchId" label="批次号" min-width="140" />
           <el-table-column prop="station" label="工位" min-width="140" />
           <el-table-column prop="temperature" label="温度" min-width="100">
             <template #default="{ row }">{{ row.temperature.toFixed(1) }}</template>
@@ -177,8 +113,7 @@
           </el-table-column>
         </el-table>
       </div>
-
-      <div class="mt-6 flex justify-end">
+      <div class="mt-5 flex justify-end">
         <el-pagination
           v-model:current-page="historyPage"
           v-model:page-size="historyPageSize"
@@ -189,7 +124,7 @@
           @current-change="loadHistory"
         />
       </div>
-    </section>
+    </SectionCard>
   </div>
 </template>
 
@@ -197,6 +132,7 @@
 import { computed, onMounted, ref } from 'vue';
 import type { EChartsCoreOption } from 'echarts/core';
 import { storeToRefs } from 'pinia';
+import { ElMessage } from 'element-plus';
 
 import {
   fetchAssessmentHistory,
@@ -206,7 +142,18 @@ import {
   type JudgmentDashboardData,
   type JudgmentStreamData,
 } from '@/api/assessment';
-import { fetchGraphVisualization, type GraphVisualizationEdge, type GraphVisualizationNode } from '@/api/graph';
+import {
+  fetchGraphVisualization,
+  mineAndSaveAprioriRules,
+  mineAprioriRules,
+  type AprioriRule,
+  type GraphVisualizationEdge,
+  type GraphVisualizationNode,
+} from '@/api/graph';
+import AprioriRulesPanel from '@/components/common/AprioriRulesPanel.vue';
+import EmptyState from '@/components/common/EmptyState.vue';
+import MetricTile from '@/components/common/MetricTile.vue';
+import SectionCard from '@/components/common/SectionCard.vue';
 import BaseChart from '@/components/charts/BaseChart.vue';
 import GraphVisualization from '@/components/charts/GraphVisualization.vue';
 import PageIntroCard from '@/components/dashboard/PageIntroCard.vue';
@@ -214,13 +161,16 @@ import { useAssessmentStore } from '@/stores/assessment';
 import { axisLabelColor, createTooltip, splitLineColor } from '@/utils/chart';
 
 const assessmentStore = useAssessmentStore();
-const { activeSampleId, currentBatchId, currentContextLabel } = storeToRefs(assessmentStore);
+const { activeSampleId, currentBatchId } = storeToRefs(assessmentStore);
 
 const historyRecords = ref<AssessmentHistoryItem[]>([]);
 const historyTotal = ref(0);
 const historyPage = ref(1);
 const historyPageSize = ref(10);
 const historyLoading = ref(false);
+const aprioriLoading = ref(false);
+const aprioriSaving = ref(false);
+const aprioriRules = ref<AprioriRule[]>([]);
 
 const dashboard = ref<JudgmentDashboardData>({
   metrics: [],
@@ -253,32 +203,13 @@ const dashboard = ref<JudgmentDashboardData>({
   },
 });
 
-const streamData = ref<JudgmentStreamData>({
-  timeAxis: [],
-  temperature: [],
-  beltSpeed: [],
-  o2Ppm: [],
-  humidity: [],
-  current: [],
-});
-
+const streamData = ref<JudgmentStreamData>({ timeAxis: [], temperature: [], beltSpeed: [], o2Ppm: [], humidity: [], current: [] });
 const graphNodes = ref<GraphVisualizationNode[]>([]);
 const graphEdges = ref<GraphVisualizationEdge[]>([]);
 
-const defectChainLabel = computed(() => {
-  const items = dashboard.value.graphReasoning?.defectChain ?? [];
-  return items.length > 0 ? items.join(' -> ') : '暂无';
-});
-
-const parameterChainLabel = computed(() => {
-  const items = dashboard.value.graphReasoning?.parameterChain ?? [];
-  return items.length > 0 ? items.join(' -> ') : '暂无参数异常链';
-});
-
-const stepChainLabel = computed(() => {
-  const items = dashboard.value.graphReasoning?.stepChain ?? [];
-  return items.length > 0 ? items.join(' -> ') : '暂无工序诊断链';
-});
+const defectChainLabel = computed(() => dashboard.value.graphReasoning.defectChain.join(' → ') || '暂无');
+const parameterChainLabel = computed(() => dashboard.value.graphReasoning.parameterChain.join(' → ') || '暂无');
+const stepChainLabel = computed(() => dashboard.value.graphReasoning.stepChain.join(' → ') || '暂无');
 
 const loadHistory = async () => {
   historyLoading.value = true;
@@ -299,14 +230,7 @@ const loadStreamData = async () => {
   try {
     streamData.value = await fetchJudgmentStream(currentBatchId.value);
   } catch {
-    streamData.value = {
-      timeAxis: [],
-      temperature: [],
-      beltSpeed: [],
-      o2Ppm: [],
-      humidity: [],
-      current: [],
-    };
+    streamData.value = { timeAxis: [], temperature: [], beltSpeed: [], o2Ppm: [], humidity: [], current: [] };
   }
 };
 
@@ -322,51 +246,51 @@ const loadGraphVisualization = async () => {
 };
 
 const switchSample = () => {
-  assessmentStore.setBatchContext({
-    sampleId: activeSampleId.value === 'SAMPLE-07' ? 'SAMPLE-09' : 'SAMPLE-07',
-  });
+  assessmentStore.setBatchContext({ sampleId: activeSampleId.value === 'SAMPLE-07' ? 'SAMPLE-09' : 'SAMPLE-07' });
+  void loadDashboard();
+};
+
+const handleMineApriori = async () => {
+  aprioriLoading.value = true;
+  try {
+    const result = await mineAprioriRules(currentBatchId.value);
+    aprioriRules.value = result.rules ?? [];
+    ElMessage.success(`Apriori 挖掘完成：${aprioriRules.value.length} 条规则`);
+  } finally {
+    aprioriLoading.value = false;
+  }
+};
+
+const handleSaveApriori = async () => {
+  aprioriSaving.value = true;
+  try {
+    const result = await mineAndSaveAprioriRules(currentBatchId.value);
+    aprioriRules.value = result.rules ?? [];
+    ElMessage.success(`Apriori 规则已入库：${result.savedRelationCount ?? result.insertedRelationCount ?? aprioriRules.value.length} 条`);
+    await loadGraphVisualization();
+  } finally {
+    aprioriSaving.value = false;
+  }
 };
 
 const streamChartOption = computed<EChartsCoreOption>(() => ({
   tooltip: createTooltip(),
-  legend: {
-    top: 10,
-    textStyle: { color: '#cbd5e1' },
-  },
-  grid: {
-    left: 24,
-    right: 20,
-    top: 64,
-    bottom: 24,
-    containLabel: true,
-  },
-  xAxis: {
-    type: 'category',
-    boundaryGap: false,
-    data: streamData.value.timeAxis,
-    axisLine: { lineStyle: { color: splitLineColor } },
-    axisLabel: { color: axisLabelColor },
-  },
-  yAxis: {
-    type: 'value',
-    axisLabel: { color: axisLabelColor },
-    splitLine: { lineStyle: { color: splitLineColor } },
-  },
+  legend: { top: 8, textStyle: { color: '#cbd5e1' } },
+  grid: { left: 24, right: 20, top: 58, bottom: 22, containLabel: true },
+  xAxis: { type: 'category', boundaryGap: false, data: streamData.value.timeAxis, axisLine: { lineStyle: { color: splitLineColor } }, axisLabel: { color: axisLabelColor } },
+  yAxis: { type: 'value', axisLabel: { color: axisLabelColor }, splitLine: { lineStyle: { color: splitLineColor } } },
   series: [
-    { name: '回流温度', type: 'line', smooth: true, data: streamData.value.temperature, lineStyle: { color: '#22d3ee', width: 2 }, itemStyle: { color: '#22d3ee' } },
-    { name: '链速', type: 'line', smooth: true, data: streamData.value.beltSpeed, lineStyle: { color: '#60a5fa', width: 2 }, itemStyle: { color: '#60a5fa' } },
-    { name: 'O2浓度', type: 'line', smooth: true, data: streamData.value.o2Ppm, lineStyle: { color: '#f59e0b', width: 2 }, itemStyle: { color: '#f59e0b' } },
-    { name: '湿度', type: 'line', smooth: true, data: streamData.value.humidity, lineStyle: { color: '#10b981', width: 2 }, itemStyle: { color: '#10b981' } },
-    { name: '电流', type: 'line', smooth: true, data: streamData.value.current, lineStyle: { color: '#ef4444', width: 2 }, itemStyle: { color: '#ef4444' } },
+    { name: '回流温度', type: 'line', smooth: true, data: streamData.value.temperature },
+    { name: '链速', type: 'line', smooth: true, data: streamData.value.beltSpeed },
+    { name: 'O2浓度', type: 'line', smooth: true, data: streamData.value.o2Ppm },
+    { name: '湿度', type: 'line', smooth: true, data: streamData.value.humidity },
+    { name: '电流', type: 'line', smooth: true, data: streamData.value.current },
   ],
 }));
 
 const radarOption = computed<EChartsCoreOption>(() => ({
   tooltip: createTooltip(),
-  legend: {
-    top: 8,
-    textStyle: { color: '#cbd5e1' },
-  },
+  legend: { top: 8, textStyle: { color: '#cbd5e1' } },
   radar: {
     radius: '64%',
     splitNumber: 4,
@@ -378,81 +302,22 @@ const radarOption = computed<EChartsCoreOption>(() => ({
   series:
     dashboard.value.radarIndicators.length === 0
       ? []
-      : [
-          {
-            type: 'radar',
-            data: [
-              {
-                value: dashboard.value.abnormalSampleValues,
-                name: '异常样本',
-                areaStyle: { color: 'rgba(239, 68, 68, 0.22)' },
-                lineStyle: { color: '#ef4444', width: 2 },
-                itemStyle: { color: '#ef4444' },
-              },
-              {
-                value: dashboard.value.targetValues,
-                name: '目标工艺',
-                areaStyle: { color: 'rgba(34, 211, 238, 0.16)' },
-                lineStyle: { color: '#22d3ee', width: 2 },
-                itemStyle: { color: '#22d3ee' },
-              },
-            ],
-          },
-        ],
+      : [{ type: 'radar', data: [{ value: dashboard.value.abnormalSampleValues, name: '异常样本' }, { value: dashboard.value.targetValues, name: '目标工艺' }] }],
 }));
 
 const barOption = computed<EChartsCoreOption>(() => ({
   tooltip: createTooltip(),
-  legend: {
-    top: 10,
-    textStyle: { color: '#cbd5e1' },
-  },
-  grid: {
-    left: 24,
-    right: 16,
-    top: 60,
-    bottom: 24,
-    containLabel: true,
-  },
-  xAxis: {
-    type: 'category',
-    data: dashboard.value.compareCategories,
-    axisLine: { lineStyle: { color: splitLineColor } },
-    axisLabel: { color: axisLabelColor },
-  },
-  yAxis: {
-    type: 'value',
-    axisLabel: { color: axisLabelColor },
-    splitLine: { lineStyle: { color: splitLineColor } },
-  },
+  legend: { top: 8, textStyle: { color: '#cbd5e1' } },
+  grid: { left: 24, right: 20, top: 58, bottom: 22, containLabel: true },
+  xAxis: { type: 'category', data: dashboard.value.compareCategories, axisLine: { lineStyle: { color: splitLineColor } }, axisLabel: { color: axisLabelColor } },
+  yAxis: { type: 'value', axisLabel: { color: axisLabelColor }, splitLine: { lineStyle: { color: splitLineColor } } },
   series: [
-    {
-      name: '当前参数',
-      type: 'bar',
-      data: dashboard.value.currentParameters,
-      itemStyle: { color: '#f97316', borderRadius: [8, 8, 0, 0] },
-    },
-    {
-      name: '目标参数',
-      type: 'bar',
-      data: dashboard.value.targetParameters,
-      itemStyle: { color: '#38bdf8', borderRadius: [8, 8, 0, 0] },
-    },
+    { name: '当前参数', type: 'bar', data: dashboard.value.currentParameters },
+    { name: '目标参数', type: 'bar', data: dashboard.value.targetParameters },
   ],
 }));
 
-onMounted(() => {
-  // 先显示页面，异步加载数据
-  Promise.all([
-    assessmentStore.loadBatches(),
-    assessmentStore.loadStations(),
-  ]).then(() => {
-    void loadDashboard();
-    void loadHistory();
-    void loadStreamData();
-    void loadGraphVisualization();
-  }).catch((error) => {
-    console.error('Failed to load initial data:', error);
-  });
+onMounted(async () => {
+  await Promise.all([loadDashboard(), loadStreamData(), loadHistory(), loadGraphVisualization(), handleMineApriori()]);
 });
 </script>

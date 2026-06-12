@@ -65,11 +65,17 @@ public class OptimizationTask {
     public UUID getBatchId() { return batchId; }
     public UUID getStepId() { return stepId; }
     public String getAlgorithmName() { return algorithmName; }
+    public String getObjectives() { return objectives; }
+    public String getConstraints() { return constraints; }
+    public String getInputParams() { return inputParams; }
     public String getOptStatus() { return optStatus; }
     public UUID getCreatedBy() { return createdBy; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getFinishedAt() { return finishedAt; }
 
+    public void setObjectives(String objectives) { this.objectives = objectives; }
+    public void setConstraints(String constraints) { this.constraints = constraints; }
+    public void setInputParams(String inputParams) { this.inputParams = inputParams; }
     public void setOptStatus(String optStatus) { this.optStatus = optStatus; }
     public void setFinishedAt(Instant finishedAt) { this.finishedAt = finishedAt; }
 }

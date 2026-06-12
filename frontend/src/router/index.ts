@@ -95,6 +95,14 @@ const routes: RouteRecordRaw[] = [
         ],
       },
       {
+        path: 'graph',
+        redirect: '/knowledge-graph',
+        meta: {
+          hidden: true,
+          roles: ['admin', 'engineer'],
+        },
+      },
+      {
         path: 'knowledge-graph',
         name: 'knowledge-graph',
         component: () => import('@/views/graph/KnowledgeGraphView.vue'),
